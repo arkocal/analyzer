@@ -12,7 +12,7 @@ jobs:
         os:
           - ubuntu-22.04 # https://github.com/ocaml/setup-ocaml/issues/872
         ocaml-compiler:
-          - 4.14.x
+          - 5.3.x
 
     runs-on: ${{ matrix.os }}
 
