@@ -165,6 +165,14 @@ let check_arguments () =
   );
   if get_bool "solvers.td3.space" && get_bool "solvers.td3.remove-wpoint" then fail "solvers.td3.space is incompatible with solvers.td3.remove-wpoint";
   if get_bool "solvers.td3.space" && get_string "solvers.td3.side_widen" = "sides-local" then fail "solvers.td3.space is incompatible with solvers.td3.side_widen = 'sides-local'";
+  if get_string "solver" = "td_parallel" then (
+    (* parallel solver unsupported *)
+    if get_bool "solvers.td3.space" then warn "Option 'solvers.td3.space' is not supported for the solver 'td_parallel' and will be ignored.";
+    if get_bool "incremental.load" then warn "The solver 'td_parallel' does not support incremental loading. Loaded data will be ignored.";
+    if get_bool "solvers.td3.verify" then warn "Option 'solvers.td3.verify' is not supported for the solver 'td_parallel' and will be ignored.";
+    if get_bool "solvers.td3.restart.wpoint.enabled" then warn "Restarting wpoints is not supported for the solver 'td_parallel'. Corresponding options will be ignored.";
+    if get_string "solvers.td3.side_widen" <> "always" then warn "The solver 'td_parallel' only supports always widening for sides. Differing options for side widening are ignored.";
+  );
   if List.mem "termination" @@ get_string_list "ana.activated" then (
     if GobConfig.get_bool "incremental.load" || GobConfig.get_bool "incremental.save" then fail "termination analysis is not compatible with incremental analysis";
     set_list "ana.activated" (GobConfig.get_list "ana.activated" @ [`String ("threadflag")]);
