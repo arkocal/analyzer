@@ -125,9 +125,9 @@ struct
     let gc = GobGc.print_quick_stat Legacy.stderr in
     Logs.newline ();
     Option.may (write_csv [GobSys.string_of_time (); string_of_int !SolverStats.vars; string_of_int !SolverStats.evals; string_of_int !ncontexts; string_of_int gc.Gc.top_heap_words]) stats_csv
-    (* print_string "Do you want to continue? [Y/n]"; *)
-    (* flush stdout *)
-    (* if read_line () = "n" then raise Break *)
+  (* print_string "Do you want to continue? [Y/n]"; *)
+  (* flush stdout *)
+  (* if read_line () = "n" then raise Break *)
 
   let () =
     let write_header = write_csv ["runtime"; "vars"; "evals"; "contexts"; "max_heap"] (* TODO @ !solver_stats_headers *) in

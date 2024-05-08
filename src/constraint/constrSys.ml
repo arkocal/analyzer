@@ -53,6 +53,14 @@ end
 (** Any system of side-effecting equations over lattices. *)
 module type EqConstrSys = MonSystem with type 'a m := 'a option
 
+(** Any system of side-effecting equations over lattices that can work with create nodes *)
+module type CreatingEqConstrSys =
+sig
+  include MonSystem with type 'a m := 'a option
+
+  val system : v -> ((v -> d) -> (v -> d -> unit) -> (v -> unit) option -> d) option
+end
+
 (** A side-effecting system with globals. *)
 module type GlobConstrSys =
 sig
@@ -61,7 +69,7 @@ sig
 
   module D : Lattice.S
   module G : Lattice.S
-  val system : LVar.t -> ((LVar.t -> D.t) -> (LVar.t -> D.t -> unit) -> (GVar.t -> G.t) -> (GVar.t -> G.t -> unit) -> D.t) option
+  val system : LVar.t -> ((LVar.t -> D.t) -> (LVar.t -> D.t -> unit) -> (LVar.t -> unit) option -> (GVar.t -> G.t) -> (GVar.t -> G.t -> unit) -> D.t) option
   val iter_vars: (LVar.t -> D.t) -> (GVar.t -> G.t) -> VarQuery.t -> LVar.t VarQuery.f -> GVar.t VarQuery.f -> unit
   val sys_change: (LVar.t -> D.t) -> (GVar.t -> G.t) -> [`L of LVar.t | `G of GVar.t] sys_change_info
 end
@@ -158,13 +166,23 @@ struct
     | `G a -> GV.is_write_only a
 end
 
+(** Translate a [CreatingEqConstrSys] into a [EqConstrSys] *)
+module EqConstrSysFromCreatingEqConstrSys (S:CreatingEqConstrSys) 
+  : EqConstrSys with type v = S.v
+                 and type d = S.d
+                 and module Var = S.Var
+                 and module Dom = S.Dom =
+struct
+  include S
+  let system x = Option.map (fun f get set -> f get set None) (S.system x)
+end
 
-(** Translate a [GlobConstrSys] into a [EqConstrSys] *)
-module EqConstrSysFromGlobConstrSys (S:GlobConstrSys)
-  : EqConstrSys   with type v = Var2(S.LVar)(S.GVar).t
-                   and type d = Lattice.Lift2(S.G)(S.D).t
-                   and module Var = Var2(S.LVar)(S.GVar)
-                   and module Dom = Lattice.Lift2(S.G)(S.D)
+(** Translate a [GlobConstrSys] into a [CreatingEqConstrSys] *)
+module CreatingEqConstrSysFromGlobConstrSys (S:GlobConstrSys)
+  : CreatingEqConstrSys with type v = Var2(S.LVar)(S.GVar).t
+                         and type d = Lattice.Lift2(S.G)(S.D).t
+                         and module Var = Var2(S.LVar)(S.GVar)
+                         and module Dom = Lattice.Lift2(S.G)(S.D)
 =
 struct
   module Var = Var2(S.LVar)(S.GVar)
@@ -182,20 +200,21 @@ struct
   let getG = function
     | `Lifted1 x -> x
     | `Bot -> S.G.bot ()
-    | `Top -> failwith "EqConstrSysFromGlobConstrSys.getG: global variable has top value"
-    | `Lifted2 _ -> failwith "EqConstrSysFromGlobConstrSys.getG: global variable has local value"
+    | `Top -> failwith "CreatingEqConstrSysFromGlobConstrSys.getG: global variable has top value"
+    | `Lifted2 _ -> failwith "CreatingEqConstrSysFromGlobConstrSys.getG: global variable has local value"
 
   let getL = function
     | `Lifted2 x -> x
     | `Bot -> S.D.bot ()
-    | `Top -> failwith "EqConstrSysFromGlobConstrSys.getL: local variable has top value"
-    | `Lifted1 _ -> failwith "EqConstrSysFromGlobConstrSys.getL: local variable has global value"
+    | `Top -> failwith "CreatingEqConstrSysFromGlobConstrSys.getL: local variable has top value"
+    | `Lifted1 _ -> failwith "CreatingEqConstrSysFromGlobConstrSys.getL: local variable has global value"
 
   let l, g = (fun x -> `L x), (fun x -> `G x)
   let lD, gD = (fun x -> `Lifted2 x), (fun x -> `Lifted1 x)
 
-  let conv f get set =
-    f (getL % get % l) (fun x v -> set (l x) (lD v))
+  let conv f get set create =
+    f (getL % get % l) (fun x v -> set (l x) (lD v)) 
+      (Option.map (fun c -> c % l) create)
       (getG % get % g) (fun x v -> set (g x) (gD v))
     |> lD
 
@@ -239,7 +258,7 @@ end
 (** Splits a [EqConstrSys] solution into a [GlobConstrSys] solution. *)
 module GlobConstrSolFromEqConstrSol (S: GlobConstrSys) (LH: Hashtbl.S with type key = S.LVar.t) (GH: Hashtbl.S with type key = S.GVar.t) =
 struct
-  module S2 = EqConstrSysFromGlobConstrSys (S)
+  module S2 = EqConstrSysFromCreatingEqConstrSys (CreatingEqConstrSysFromGlobConstrSys (S))
   module VH = Hashtbl.Make (S2.Var)
 
   include GlobConstrSolFromEqConstrSolBase (S) (LH) (GH) (VH)
@@ -251,7 +270,7 @@ module GlobSolverFromEqSolver (Sol:GenericEqIncrSolverBase)
     functor (LH:Hashtbl.S with type key=S.LVar.t) ->
     functor (GH:Hashtbl.S with type key=S.GVar.t) ->
     struct
-      module EqSys = EqConstrSysFromGlobConstrSys (S)
+      module EqSys = EqConstrSysFromCreatingEqConstrSys (CreatingEqConstrSysFromGlobConstrSys (S))
 
       module VH : Hashtbl.S with type key=EqSys.v = Hashtbl.Make(EqSys.Var)
       module Sol' = Sol (EqSys) (VH)
