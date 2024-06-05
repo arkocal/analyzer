@@ -14,6 +14,73 @@ open Messages
 
 module M = Messages
 
+module LockableHashtbl (H:Hashtbl.HashedType) (HM:Hashtbl.S with type key = H.t) = 
+struct
+  type key = HM.key
+  type 'a t = (Dmutex.t * 'a HM.t) array
+
+  (* double hash to make sure that not all elements in a top-level bucket have the same hash*)
+  let bucket_index lhm k = Int.abs ((Hashtbl.hash (H.hash k)) mod (Array.length lhm))
+
+  let create sz = Array.init sz (fun _ -> Dmutex.create (), HM.create 10)
+
+  let length lhm = Array.fold (fun l (_, hm) -> l + (HM.length hm)) 0 lhm
+
+  let find lhm k = 
+    let i = bucket_index lhm k in
+    let (_, hm) = Array.get lhm i in
+    HM.find hm k
+
+  let find_default lhm k d =
+    let i = bucket_index lhm k in
+    let (_, hm) = Array.get lhm i in
+    HM.find_default hm k d
+
+  let remove lhm k = 
+    let i = bucket_index lhm k in
+    let (_, hm) as ele = Array.get lhm i in
+    HM.remove hm k;
+    Array.set lhm i ele
+
+  let replace lhm k v =
+    let i = bucket_index lhm k in
+    let (_, hm) as ele = Array.get lhm i in
+    HM.replace hm k v;
+    Array.set lhm i ele
+
+  let mem lhm k = 
+    let i = bucket_index lhm k in
+    let (_, hm) = Array.get lhm i in
+    HM.mem hm k
+
+  let iter f lhm = Array.iter (fun (_, hm) -> HM.iter f hm) lhm
+  let iter_safe f lhm = Array.iter (fun (me, hm) -> Dmutex.lock me; HM.iter f hm; Dmutex.unlock me) lhm
+
+  (*
+  let to_hashtbl lhm = 
+    let mapping_list = Array.fold (fun acc (_, hm) -> List.append acc (HM.to_list hm)) [] lhm in
+    HM.of_list mapping_list
+  *)
+
+  let to_hashtbl lhm = Array.fold (fun acc (_, hm) ->
+      HM.merge (
+        fun k ao bo -> 
+          match ao, bo with
+          | None, None -> None
+          | Some a, None -> ao
+          | None, Some b -> bo
+          | Some a, Some b -> failwith "LockableHashtbl: One key present in multiple buckets"
+      ) acc hm) (HM.create 10) lhm
+
+  let lock k lhm = 
+    let (me, _) = Array.get lhm (bucket_index lhm k) in
+    Dmutex.lock me
+
+  let unlock k lhm = 
+    let (me, _) = Array.get lhm (bucket_index lhm k) in
+    Dmutex.unlock me
+end 
+
 module Base : GenericEqSolver =
   functor (S:EqConstrSys) ->
   functor (HM:Hashtbl.S with type key = S.v) ->
@@ -21,26 +88,27 @@ module Base : GenericEqSolver =
     open SolverBox.Warrow (S.Dom)
     include Generic.SolverStats (S) (HM)
     module VS = Set.Make (S.Var)
+    module LHM = LockableHashtbl (S.Var) (HM)
 
     type solver_data = {
-      infl: VS.t HM.t;
-      rho: S.Dom.t HM.t;
-      wpoint: unit HM.t;
-      stable: unit HM.t;
+      infl: VS.t LHM.t;
+      rho: S.Dom.t LHM.t;
+      wpoint: unit LHM.t;
+      stable: unit LHM.t;
     }
 
     let create_empty_data () = {
-      infl = HM.create 10;
-      rho = HM.create 10;
-      wpoint = HM.create 10;
-      stable = HM.create 10;
+      infl = LHM.create 10;
+      rho = LHM.create 10;
+      wpoint = LHM.create 10;
+      stable = LHM.create 10;
     }
 
     let print_data data =
-      Logs.debug "|rho|=%d" (HM.length data.rho);
-      Logs.debug "|stable|=%d" (HM.length data.stable);
-      Logs.debug "|infl|=%d" (HM.length data.infl);
-      Logs.debug "|wpoint|=%d" (HM.length data.wpoint)
+      Logs.debug "|rho|=%d" (LHM.length data.rho);
+      Logs.debug "|stable|=%d" (LHM.length data.stable);
+      Logs.debug "|infl|=%d" (LHM.length data.infl);
+      Logs.debug "|wpoint|=%d" (LHM.length data.wpoint)
 
     let print_data_verbose data str =
       if Logs.Level.should_log Debug then (
@@ -58,7 +126,7 @@ module Base : GenericEqSolver =
       in
 
       let term  = GobConfig.get_bool "solvers.td3.term" in
-      let called = HM.create 10 in
+      let called = LHM.create 10 in
 
       let infl = data.infl in
       let rho = data.rho in
@@ -68,13 +136,13 @@ module Base : GenericEqSolver =
 
       let () = print_solver_stats := fun () ->
           print_data data;
-          Logs.info "|called|=%d" (HM.length called);
-          print_context_stats rho
+          Logs.info "|called|=%d" (LHM.length called);
+          print_context_stats @@ LHM.to_hashtbl rho
       in
 
       let add_infl y x =
         if tracing then trace "sol2" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
-        HM.replace infl y (VS.add x (try HM.find infl y with Not_found -> VS.empty));
+        LHM.replace infl y (VS.add x (try LHM.find infl y with Not_found -> VS.empty));
       in
 
       let destabilize_ref: (S.v -> unit) ref = ref (fun _ -> failwith "no destabilize yet") in
@@ -82,19 +150,19 @@ module Base : GenericEqSolver =
 
       (* Same as destabilize, but returns true if it destabilized a called var, or a var in vs which was stable. *)
       let rec solve ?reuse_eq x phase = (* ~iterate*)
-        if tracing then trace "sol2" "solve %a, phase: %s, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (show_phase phase) (HM.mem called x) (HM.mem stable x) (HM.mem wpoint x);
+        if tracing then trace "sol2" "solve %a, phase: %s, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (show_phase phase) (LHM.mem called x) (LHM.mem stable x) (LHM.mem wpoint x);
         init x;
         assert (S.system x <> None);
-        if not (HM.mem called x || HM.mem stable x) then (
+        if not (LHM.mem called x || LHM.mem stable x) then (
           if tracing then trace "sol2" "stable add %a" S.Var.pretty_trace x;
-          HM.replace stable x ();
-          HM.replace called x ();
-          (* Here we cache HM.mem wpoint x before eq. If during eq eval makes x wpoint, then be still don't apply widening the first time, but just overwrite.
+          LHM.replace stable x ();
+          LHM.replace called x ();
+          (* Here we cache LHM.mem wpoint x before eq. If during eq eval makes x wpoint, then be still don't apply widening the first time, but just overwrite.
              It means that the first iteration at wpoint is still precise.
              This doesn't matter during normal solving (?), because old would be bot.
              This matters during incremental loading, when wpoints have been removed (or not marshaled) and are redetected.
              Then the previous local wpoint value is discarded automagically and not joined/widened, providing limited restarting of local wpoints. (See eval for more complete restarting.) *)
-          let wp = HM.mem wpoint x in (* if x becomes a wpoint during eq, checking this will delay widening until next solve *)
+          let wp = LHM.mem wpoint x in (* if x becomes a wpoint during eq, checking this will delay widening until next solve *)
           let eqd = (* d from equation/rhs *)
             match reuse_eq with
             | Some d ->
@@ -104,8 +172,8 @@ module Base : GenericEqSolver =
               d
             | _ -> eq x (eval x) (side ~x)
           in
-          HM.remove called x;
-          let old = HM.find rho x in (* d from older solve *) (* find old value after eq since wpoint restarting in eq/eval might have changed it meanwhile *)
+          LHM.remove called x;
+          let old = LHM.find rho x in (* d from older solve *) (* find old value after eq since wpoint restarting in eq/eval might have changed it meanwhile *)
           let wpd = (* d after widen/narrow (if wp) *)
             if not wp then eqd
             else if term then
@@ -121,26 +189,26 @@ module Base : GenericEqSolver =
           if tracing then trace "sol" "Var: %a (wp: %b)\nOld value: %a\nEqd: %a\nNew value: %a" S.Var.pretty_trace x wp S.Dom.pretty old S.Dom.pretty eqd S.Dom.pretty wpd;
           if not (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old wpd) ()) then ( (* value changed *)
             if tracing then trace "sol" "Changed";
-            (* if tracing && not (S.Dom.is_bot old) && HM.mem wpoint x then trace "solchange" "%a (wpx: %b): %a -> %a" S.Var.pretty_trace x (HM.mem wpoint x) S.Dom.pretty old S.Dom.pretty wpd; *)
-            if tracing && not (S.Dom.is_bot old) && HM.mem wpoint x then trace "solchange" "%a (wpx: %b): %a" S.Var.pretty_trace x (HM.mem wpoint x) S.Dom.pretty_diff (wpd, old);
+            (* if tracing && not (S.Dom.is_bot old) && LHM.mem wpoint x then trace "solchange" "%a (wpx: %b): %a -> %a" S.Var.pretty_trace x (LHM.mem wpoint x) S.Dom.pretty old S.Dom.pretty wpd; *)
+            if tracing && not (S.Dom.is_bot old) && LHM.mem wpoint x then trace "solchange" "%a (wpx: %b): %a" S.Var.pretty_trace x (LHM.mem wpoint x) S.Dom.pretty_diff (wpd, old);
             update_var_event x old wpd;
-            HM.replace rho x wpd;
+            LHM.replace  rho x wpd;
             destabilize x;
             (solve[@tailcall]) x phase
           ) else (
             (* TODO: why non-equal and non-stable checks in switched order compared to TD3 paper? *)
-            if not (HM.mem stable x) then ( (* value unchanged, but not stable, i.e. destabilized itself during rhs *)
+            if not (LHM.mem stable x) then ( (* value unchanged, but not stable, i.e. destabilized itself during rhs *)
               if tracing then trace "sol2" "solve still unstable %a" S.Var.pretty_trace x;
               (solve[@tailcall]) x Widen
             ) else (
-              if term && phase = Widen && HM.mem wpoint x then ( (* TODO: or use wp? *)
+              if term && phase = Widen && LHM.mem wpoint x then ( (* TODO: or use wp? *)
                 if tracing then trace "sol2" "solve switching to narrow %a" S.Var.pretty_trace x;
                 if tracing then trace "sol2" "stable remove %a" S.Var.pretty_trace x;
-                HM.remove stable x;
+                LHM.remove stable x;
                 (solve[@tailcall]) ~reuse_eq:eqd x Narrow
               ) else if remove_wpoint && (not term || phase = Narrow) then ( (* this makes e.g. nested loops precise, ex. tests/regression/34-localization/01-nested.c - if we do not remove wpoint, the inner loop head will stay a wpoint and widen the outer loop variable. *)
-                if tracing then trace "sol2" "solve removing wpoint %a (%b)" S.Var.pretty_trace x (HM.mem wpoint x);
-                HM.remove wpoint x
+                if tracing then trace "sol2" "solve removing wpoint %a (%b)" S.Var.pretty_trace x (LHM.mem wpoint x);
+                LHM.remove wpoint x
               )
             )
           )
@@ -152,22 +220,22 @@ module Base : GenericEqSolver =
         | Some f -> f get set
       and simple_solve x y =
         if tracing then trace "sol2" "simple_solve %a (rhs: %b)" S.Var.pretty_trace y (S.system y <> None);
-        if S.system y = None then (init y; HM.replace stable y (); HM.find rho y) else
-          (solve y Widen; HM.find rho y) 
+        if S.system y = None then (init y; LHM.replace stable y (); LHM.find rho y) else
+          (solve y Widen; LHM.find rho y) 
 
       and eval x y = (* ~query *)
         if tracing then trace "sol2" "eval %a ## %a" S.Var.pretty_trace x S.Var.pretty_trace y;
         get_var_event y;
-        if HM.mem called y then (
+        if LHM.mem called y then (
           if tracing then trace "sol2" "eval adding wpoint %a from %a" S.Var.pretty_trace y S.Var.pretty_trace x;
-          HM.replace wpoint y ();
+          LHM.replace wpoint y ();
         );
         let tmp = simple_solve x y in
-        if HM.mem rho y then add_infl y x;
+        if LHM.mem rho y then add_infl y x;
         if tracing then trace "sol2" "eval %a ## %a -> %a" S.Var.pretty_trace x S.Var.pretty_trace y S.Dom.pretty tmp;
         tmp
       and side ?x y d = (* side from x to y; only to variables y w/o rhs; x only used for trace *)
-        if tracing then trace "sol2" "side to %a (wpx: %b) from %a ## value: %a" S.Var.pretty_trace y (HM.mem wpoint y) (Pretty.docOpt (S.Var.pretty_trace ())) x S.Dom.pretty d;
+        if tracing then trace "sol2" "side to %a (wpx: %b) from %a ## value: %a" S.Var.pretty_trace y (LHM.mem wpoint y) (Pretty.docOpt (S.Var.pretty_trace ())) x S.Dom.pretty d;
         if S.system y <> None then (
           Logs.warn "side-effect to unknown w/ rhs: %a, contrib: %a" S.Var.pretty_trace y S.Dom.pretty d;
         );
@@ -179,46 +247,46 @@ module Base : GenericEqSolver =
           if M.tracing then M.traceu "sol2" "-> %a" S.Dom.pretty r;
           r
         in
-        let op a b = if HM.mem wpoint y then widen a b else S.Dom.join a b
+        let op a b = if LHM.mem wpoint y then widen a b else S.Dom.join a b
         in
-        let old = HM.find rho y in
+        let old = LHM.find rho y in
         let tmp = op old d in
         if tracing then trace "sol2" "stable add %a" S.Var.pretty_trace y;
-        HM.replace stable y ();
+        LHM.replace stable y ();
         if not (S.Dom.leq tmp old) then (
-          if tracing && not (S.Dom.is_bot old) then trace "solside" "side to %a (wpx: %b) from %a: %a -> %a" S.Var.pretty_trace y (HM.mem wpoint y) (Pretty.docOpt (S.Var.pretty_trace ())) x S.Dom.pretty old S.Dom.pretty tmp;
-          if tracing && not (S.Dom.is_bot old) then trace "solchange" "side to %a (wpx: %b) from %a: %a" S.Var.pretty_trace y (HM.mem wpoint y) (Pretty.docOpt (S.Var.pretty_trace ())) x S.Dom.pretty_diff (tmp, old);
-          (* HM.replace rho y ((if HM.mem wpoint y then S.Dom.widen old else identity) (S.Dom.join old d)); *)
-          HM.replace rho y tmp;
+          if tracing && not (S.Dom.is_bot old) then trace "solside" "side to %a (wpx: %b) from %a: %a -> %a" S.Var.pretty_trace y (LHM.mem wpoint y) (Pretty.docOpt (S.Var.pretty_trace ())) x S.Dom.pretty old S.Dom.pretty tmp;
+          if tracing && not (S.Dom.is_bot old) then trace "solchange" "side to %a (wpx: %b) from %a: %a" S.Var.pretty_trace y (LHM.mem wpoint y) (Pretty.docOpt (S.Var.pretty_trace ())) x S.Dom.pretty_diff (tmp, old);
+          (* LHM.replace rho y ((if LHM.mem wpoint y then S.Dom.widen old else identity) (S.Dom.join old d)); *)
+          LHM.replace rho y tmp;
           destabilize y;
           (* make y a widening point. This will only matter for the next side _ y.  *)
           if tracing then trace "sol2" "side adding wpoint %a from %a" S.Var.pretty_trace y (Pretty.docOpt (S.Var.pretty_trace ())) x;
-          HM.replace wpoint y ()
+          LHM.replace wpoint y ()
         )
       and init x =
         if tracing then trace "sol2" "init %a" S.Var.pretty_trace x;
-        if not (HM.mem rho x) then (
+        if not (LHM.mem rho x) then (
           new_var_event x;
-          HM.replace rho x (S.Dom.bot ())
+          LHM.replace rho x (S.Dom.bot ())
         )
       in
 
       let set_start (x,d) =
         if tracing then trace "sol2" "set_start %a ## %a" S.Var.pretty_trace x S.Dom.pretty d;
         init x;
-        HM.replace rho x d;
-        HM.replace stable x ();
+        LHM.replace rho x d;
+        LHM.replace stable x ();
         (* solve x Widen *)
       in
 
       let rec destabilize_normal x =
         if tracing then trace "sol2" "destabilize %a" S.Var.pretty_trace x;
-        let w = HM.find_default infl x VS.empty in
-        HM.replace infl x VS.empty;
+        let w = LHM.find_default infl x VS.empty in
+        LHM.replace infl x VS.empty;
         VS.iter (fun y ->
             if tracing then trace "sol2" "stable remove %a" S.Var.pretty_trace y;
-            HM.remove stable y;
-            if not (HM.mem called y) then destabilize_normal y
+            LHM.remove stable y;
+            if not (LHM.mem called y) then destabilize_normal y
           ) w
       in
 
@@ -233,7 +301,7 @@ module Base : GenericEqSolver =
       let i = ref 0 in
       let rec solver () = (* as while loop in paper *)
         incr i;
-        let unstable_vs = List.filter (neg (HM.mem stable)) vs in
+        let unstable_vs = List.filter (neg (LHM.mem stable)) vs in
         if unstable_vs <> [] then (
           if Logs.Level.should_log Debug then (
             if !i = 1 then Logs.newline ();
@@ -258,14 +326,14 @@ module Base : GenericEqSolver =
       if GobConfig.get_bool "dbg.print_wpoints" then (
         Logs.newline ();
         Logs.debug "Widening points:";
-        HM.iter (fun k () -> Logs.debug "%a" S.Var.pretty_trace k) wpoint;
+        LHM.iter (fun k () -> Logs.debug "%a" S.Var.pretty_trace k) wpoint;
         Logs.newline ();
       );
 
 
       print_data_verbose data "Data after postsolve";
 
-      rho
+      LHM.to_hashtbl rho
   end
 
 let () =
