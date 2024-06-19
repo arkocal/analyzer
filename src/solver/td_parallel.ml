@@ -145,7 +145,14 @@ module Base : GenericEqSolver =
         LHM.replace infl y (VS.add x (try LHM.find infl y with Not_found -> VS.empty));
       in
 
-      (* used in iterate *)
+      let init x =
+        if tracing then trace "sol2" "init %a" S.Var.pretty_trace x;
+        if not (LHM.mem rho x) then (
+          new_var_event x;
+          LHM.replace rho x (S.Dom.bot ())
+        )
+      in
+
       let eq x get set =
         if tracing then trace "sol2" "eq %a" S.Var.pretty_trace x;
         match S.system x with
@@ -168,17 +175,24 @@ module Base : GenericEqSolver =
         let query x y = (* ~eval in td3 *)
           let simple_solve y =
             if tracing then trace "sol2" "simple_solve %a (rhs: %b)" S.Var.pretty_trace y (S.system y <> None);
-            if S.system y = None then (init y; LHM.replace stable y (); LHM.find rho y) else
-              (iterate y Widen; LHM.find rho y) 
+            if S.system y = None then (
+              init y;
+              LHM.replace stable y ()
+            ) else (
+              LHM.replace called x ();
+              iterate y Widen;
+              LHM.remove called x)
           in
           if tracing then trace "sol2" "query %a ## %a" S.Var.pretty_trace x S.Var.pretty_trace y;
           get_var_event y;
-          if LHM.mem called y then (
+          if not (LHM.mem called y) then (
+            simple_solve y
+          ) else (
             if tracing then trace "sol2" "query adding wpoint %a from %a" S.Var.pretty_trace y S.Var.pretty_trace x;
             LHM.replace wpoint y ();
           );
-          let tmp = simple_solve y in
-          if LHM.mem rho y then add_infl y x;
+          let tmp = LHM.find rho y in
+          add_infl y x;
           if tracing then trace "sol2" "query %a ## %a -> %a" S.Var.pretty_trace x S.Var.pretty_trace y S.Dom.pretty tmp;
           tmp
         in
@@ -218,10 +232,9 @@ module Base : GenericEqSolver =
         if tracing then trace "sol2" "iterate %a, phase: %s, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (show_phase phase) (LHM.mem called x) (LHM.mem stable x) (LHM.mem wpoint x);
         init x;
         assert (S.system x <> None);
-        if not (LHM.mem called x || LHM.mem stable x) then (
+        if not (LHM.mem stable x) then (
           if tracing then trace "sol2" "stable add %a" S.Var.pretty_trace x;
           LHM.replace stable x ();
-          LHM.replace called x ();
           (* Here we cache LHM.mem wpoint x before eq. If during eq evaluation makes x wpoint, then be still don't apply widening the first time, but just overwrite.
              It means that the first iteration at wpoint is still precise.
              This doesn't matter during normal solving (?), because old would be bot.
@@ -237,7 +250,6 @@ module Base : GenericEqSolver =
               d
             | _ -> eq x (query x) (side x)
           in
-          LHM.remove called x;
           let old = LHM.find rho x in (* d from older iterate *) (* find old value after eq since wpoint restarting in eq/query might have changed it meanwhile *)
           let wpd = (* d after widen/narrow (if wp) *)
             if not wp then eqd
@@ -278,12 +290,6 @@ module Base : GenericEqSolver =
             )
           )
         )
-      and init x =
-        if tracing then trace "sol2" "init %a" S.Var.pretty_trace x;
-        if not (LHM.mem rho x) then (
-          new_var_event x;
-          LHM.replace rho x (S.Dom.bot ())
-        )
       in
 
       let set_start (x,d) =
@@ -313,7 +319,7 @@ module Base : GenericEqSolver =
             Logs.newline ();
             flush_all ();
           );
-          List.iter (fun x -> iterate x Widen) unstable_vs;
+          List.iter (fun x -> LHM.replace called x (); iterate x Widen; LHM.remove called x) unstable_vs;
           solver ();
         )
       in
