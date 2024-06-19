@@ -1,4 +1,4 @@
-(** Terminating, parallelized top-down solver ([td_parallel]).
+(** Terminating top-down solver with side effects. Baseline for comparisons with td_parallel solvers ([td_simplified]).
 
     @see <https://doi.org/10.1017/S0960129521000499> Seidl, H., Vogler, R. Three improvements to the top-down solver.
     @see <https://arxiv.org/abs/2209.10445> Interactive Abstract Interpretation: Reanalyzing Whole Programs for Cheap. *)
@@ -346,4 +346,4 @@ module Base : GenericEqSolver =
   end
 
 let () =
-  Selector.add_solver ("td_parallel", (module PostSolver.EqIncrSolverFromEqSolver (Base)));
+  Selector.add_solver ("td_simplified", (module PostSolver.EqIncrSolverFromEqSolver (Base)));
