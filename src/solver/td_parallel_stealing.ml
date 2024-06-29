@@ -103,10 +103,12 @@ module Base : GenericEqSolver =
       stable: int HM.t;
     }
 
-    type thread_data = {
+    type single_thread_data = {
       wpoint: unit HM.t;
       infl: VS.t HM.t;
-    }
+    } 
+
+    type thread_date = single_thread_data Array.t
 
     let create_empty_solver_data () = {
       rho = LHM.create map_size;
@@ -114,10 +116,12 @@ module Base : GenericEqSolver =
       stable = HM.create 10;
     }
 
-    let create_empty_thread_data () = {
-      wpoint = HM.create 10;
-      infl = HM.create 10;
-    }
+    let create_empty_thread_data () = 
+      Array.init nr_threads (fun _ -> 
+          {
+            wpoint = HM.create 10;
+            infl = HM.create 10;
+          })
 
     let print_data data =
       Logs.debug "|rho|=%d" (LHM.length data.rho);
@@ -137,6 +141,9 @@ module Base : GenericEqSolver =
 
     let solve st vs =
       let data = create_empty_solver_data ()
+      in
+      (* init thread local data *)
+      let t_data = create_empty_thread_data ()
       in
 
       let term  = GobConfig.get_bool "solvers.td3.term" in
@@ -169,13 +176,11 @@ module Base : GenericEqSolver =
         | Some f -> f get set
       in
 
-      let solve_thread x prio =  
-        (* init thread local data *)
-        let t_data = create_empty_thread_data ()
-        in
-
-        let wpoint = t_data.wpoint in
-        let infl = t_data.infl in
+      let solve_thread x thread_id =
+        let this_t_data = (Array.get t_data thread_id) in
+        let wpoint = this_t_data.wpoint in
+        let infl = this_t_data.infl in
+        let prio = (lowest_prio - thread_id - 1) in
 
         let add_infl y x =
           if tracing then trace "sol2" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
@@ -325,9 +330,8 @@ module Base : GenericEqSolver =
       in
 
       let start_threads x =
-        let threads = Array.init nr_threads (fun j -> 
-            let thread_id = (lowest_prio - j - 1) in
-            Domain.spawn (fun () -> solve_thread x thread_id)) in 
+        let threads = Array.init nr_threads (fun j ->
+            Domain.spawn (fun () -> solve_thread x j)) in 
         Array.iter Domain.join threads
       in
 
