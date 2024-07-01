@@ -99,8 +99,8 @@ module Base : GenericEqSolver =
     (* data of *)
     type solver_data = {
       rho: S.Dom.t LHM.t;
-      called: int HM.t;
-      stable: int HM.t;
+      called: int LHM.t;
+      stable: int LHM.t;
     }
 
     type single_thread_data = {
@@ -112,8 +112,8 @@ module Base : GenericEqSolver =
 
     let create_empty_solver_data () = {
       rho = LHM.create map_size;
-      called = HM.create 10;
-      stable = HM.create 10;
+      called = LHM.create map_size;
+      stable = LHM.create map_size;
     }
 
     let create_empty_thread_data () = 
@@ -125,8 +125,8 @@ module Base : GenericEqSolver =
 
     let print_data data =
       Logs.debug "|rho|=%d" (LHM.length data.rho);
-      Logs.debug "|called|=%d" (HM.length data.called);
-      Logs.debug "|stable|=%d" (HM.length data.stable)
+      Logs.debug "|called|=%d" (LHM.length data.called);
+      Logs.debug "|stable|=%d" (LHM.length data.stable)
 
     let print_data_verbose data str =
       if Logs.Level.should_log Debug then (
@@ -164,8 +164,8 @@ module Base : GenericEqSolver =
         if not (LHM.mem rho x) then (
           new_var_event x;
           LHM.replace rho x (S.Dom.bot ());
-          HM.replace stable x lowest_prio;
-          HM.replace called x lowest_prio;
+          LHM.replace stable x lowest_prio;
+          LHM.replace called x lowest_prio;
         )
       in
 
@@ -193,8 +193,8 @@ module Base : GenericEqSolver =
           HM.replace infl x VS.empty;
           VS.iter (fun y ->
               if tracing then trace "sol2" "stable remove %a" S.Var.pretty_trace y;
-              HM.replace stable y lowest_prio;
-              if not (HM.find_default called y lowest_prio <= prio) then destabilize y
+              LHM.replace stable y lowest_prio;
+              if not (LHM.find_default called y lowest_prio <= prio) then destabilize y
             ) w
         in
 
@@ -204,15 +204,15 @@ module Base : GenericEqSolver =
               if tracing then trace "sol2" "simple_solve %a (rhs: %b)" S.Var.pretty_trace y (S.system y <> None);
               if S.system y = None then (
                 init y;
-                HM.replace stable y prio
+                LHM.replace stable y prio
               ) else (
-                HM.replace called x prio;
+                LHM.replace called x prio;
                 iterate y Widen;
-                HM.replace called x lowest_prio)
+                LHM.replace called x lowest_prio)
             in
             if tracing then trace "sol2" "query %a ## %a" S.Var.pretty_trace x S.Var.pretty_trace y;
             get_var_event y;
-            if not (HM.find_default called y lowest_prio <= prio) then (
+            if not (LHM.find_default called y lowest_prio <= prio) then (
               simple_solve y
             ) else (
               if tracing then trace "sol2" "query adding wpoint %a from %a" S.Var.pretty_trace y S.Var.pretty_trace x;
@@ -242,7 +242,7 @@ module Base : GenericEqSolver =
             let old = LHM.find rho y in
             let tmp = op old d in
             if tracing then trace "sol2" "stable add %a" S.Var.pretty_trace y;
-            HM.replace stable y prio;
+            LHM.replace stable y prio;
             if not (S.Dom.leq tmp old) then (
               if tracing && not (S.Dom.is_bot old) then trace "solside" "side to %a (wpx: %b) from %a: %a -> %a" S.Var.pretty_trace y (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty old S.Dom.pretty tmp;
               if tracing && not (S.Dom.is_bot old) then trace "solchange" "side to %a (wpx: %b) from %a: %a" S.Var.pretty_trace y (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty_diff (tmp, old);
@@ -256,12 +256,12 @@ module Base : GenericEqSolver =
           in  
 
           (* begining of iterate*)
-          if tracing then trace "sol2" "iterate %a, phase: %s, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (show_phase phase) (HM.find_default called x lowest_prio <= prio) (HM.find_default stable x lowest_prio <= prio) (HM.mem wpoint x);
+          if tracing then trace "sol2" "iterate %a, phase: %s, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (show_phase phase) (LHM.find_default called x lowest_prio <= prio) (LHM.find_default stable x lowest_prio <= prio) (HM.mem wpoint x);
           init x;
           assert (S.system x <> None);
-          if not (HM.find_default stable x lowest_prio <= prio) then (
+          if not (LHM.find_default stable x lowest_prio <= prio) then (
             if tracing then trace "sol2" "stable add %a" S.Var.pretty_trace x;
-            HM.replace stable x prio;
+            LHM.replace stable x prio;
             (* Here we cache LHM.mem wpoint x before eq. If during eq evaluation makes x wpoint, then be still don't apply widening the first time, but just overwrite.
                It means that the first iteration at wpoint is still precise.
                This doesn't matter during normal solving (?), because old would be bot.
@@ -301,14 +301,14 @@ module Base : GenericEqSolver =
               (iterate[@tailcall]) x phase
             ) else (
               (* TODO: why non-equal and non-stable checks in switched order compared to TD3 paper? *)
-              if not (HM.find_default stable x lowest_prio <= prio) then ( (* value unchanged, but not stable, i.e. destabilized itself during rhs *)
+              if not (LHM.find_default stable x lowest_prio <= prio) then ( (* value unchanged, but not stable, i.e. destabilized itself during rhs *)
                 if tracing then trace "sol2" "iterate still unstable %a" S.Var.pretty_trace x;
                 (iterate[@tailcall]) x Widen
               ) else (
                 if term && phase = Widen && HM.mem wpoint x then ( (* TODO: or use wp? *)
                   if tracing then trace "sol2" "iterate switching to narrow %a" S.Var.pretty_trace x;
                   if tracing then trace "sol2" "stable remove %a" S.Var.pretty_trace x;
-                  HM.replace stable x lowest_prio;
+                  LHM.replace stable x lowest_prio;
                   (iterate[@tailcall]) ~reuse_eq:eqd x Narrow
                 ) else if remove_wpoint && (not term || phase = Narrow) then ( (* this makes e.g. nested loops precise, ex. tests/regression/34-localization/01-nested.c - if we do not remove wpoint, the inner loop head will stay a wpoint and widen the outer loop variable. *)
                   if tracing then trace "sol2" "iterate removing wpoint %a (%b)" S.Var.pretty_trace x (HM.mem wpoint x);
@@ -325,14 +325,14 @@ module Base : GenericEqSolver =
         if tracing then trace "sol2" "set_start %a ## %a" S.Var.pretty_trace x S.Dom.pretty d;
         init x;
         LHM.replace rho x d;
-        HM.replace stable x highest_prio;
+        LHM.replace stable x highest_prio;
         (* iterate x Widen *)
       in
 
       let start_threads x =
         let threads = Array.init nr_threads (fun j ->
-            Domain.spawn (fun () -> solve_thread x j)) in 
-        Array.iter Domain.join threads
+            Thread.create (fun () -> solve_thread x j) ()) in 
+        Array.iter Thread.join threads
       in
 
       (* Imperative part starts here*)
@@ -345,7 +345,7 @@ module Base : GenericEqSolver =
       let i = ref 0 in
       let rec solver () = (* as while loop in paper *)
         incr i;
-        let unstable_vs = List.filter (neg (fun x -> HM.find_default stable x lowest_prio < lowest_prio)) vs in
+        let unstable_vs = List.filter (neg (fun x -> LHM.find_default stable x lowest_prio < lowest_prio)) vs in
         if unstable_vs <> [] then (
           if Logs.Level.should_log Debug then (
             if !i = 1 then Logs.newline ();
@@ -354,9 +354,9 @@ module Base : GenericEqSolver =
             Logs.newline ();
             flush_all ();
           );
-          List.iter (fun x -> HM.replace called x highest_prio;
+          List.iter (fun x -> LHM.replace called x highest_prio;
                       start_threads x;
-                      HM.replace called x lowest_prio) unstable_vs;
+                      LHM.replace called x lowest_prio) unstable_vs;
           solver ();
         )
       in
