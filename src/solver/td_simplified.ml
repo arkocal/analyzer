@@ -179,9 +179,9 @@ module Base : GenericEqSolver =
               init y;
               LHM.replace stable y ()
             ) else (
-              LHM.replace called x ();
+              LHM.replace called y ();
               iterate y Widen;
-              LHM.remove called x)
+              LHM.remove called y)
           in
           if tracing then trace "sol2" "query %a ## %a" S.Var.pretty_trace x S.Var.pretty_trace y;
           get_var_event y;
