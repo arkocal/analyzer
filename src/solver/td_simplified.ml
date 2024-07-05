@@ -173,14 +173,18 @@ module Base : GenericEqSolver =
 
       let rec iterate ?reuse_eq x phase = (* ~(inner) solve in td3*)
         let query x y = (* ~eval in td3 *)
+          let prio = if LHM.mem called y then 9 else 10 in
+          if tracing then trace "called" "entering query with prio %d for %a" prio S.Var.pretty_trace y;
           let simple_solve y =
             if tracing then trace "sol2" "simple_solve %a (rhs: %b)" S.Var.pretty_trace y (S.system y <> None);
             if S.system y = None then (
               init y;
               LHM.replace stable y ()
             ) else (
+              if tracing then trace "called" "query setting prio from 10 to 9 for %a" S.Var.pretty_trace y;
               LHM.replace called y ();
               iterate y Widen;
+              if tracing then trace "called" "query setting prio back from 9 to 10 for %a" S.Var.pretty_trace y;
               LHM.remove called y)
           in
           if tracing then trace "sol2" "query %a ## %a" S.Var.pretty_trace x S.Var.pretty_trace y;
@@ -224,12 +228,13 @@ module Base : GenericEqSolver =
             destabilize y;
             (* make y a widening point. This will only matter for the next side _ y.  *)
             if tracing then trace "sol2" "side adding wpoint %a from %a" S.Var.pretty_trace y S.Var.pretty_trace x;
+            if tracing then trace "wpoint" "side adding wpoint %a (%b)" S.Var.pretty_trace y (LHM.mem wpoint y);
             LHM.replace wpoint y ()
           )
         in  
 
         (* begining of iterate*)
-        if tracing then trace "sol2" "iterate %a, phase: %s, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (show_phase phase) (LHM.mem called x) (LHM.mem stable x) (LHM.mem wpoint x);
+        if tracing then trace "iter" "iterate %a, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (LHM.mem called x) (LHM.mem stable x) (LHM.mem wpoint x);
         init x;
         assert (S.system x <> None);
         if not (LHM.mem stable x) then (
@@ -253,15 +258,18 @@ module Base : GenericEqSolver =
           let old = LHM.find rho x in (* d from older iterate *) (* find old value after eq since wpoint restarting in eq/query might have changed it meanwhile *)
           let wpd = (* d after widen/narrow (if wp) *)
             if not wp then eqd
-            else if term then
-              match phase with
-              | Widen -> S.Dom.widen old (S.Dom.join old eqd)
-              | Narrow when GobConfig.get_bool "exp.no-narrow" -> old (* no narrow *)
-              | Narrow ->
-                (* assert S.Dom.(leq eqd old || not (leq old eqd)); (* https://github.com/goblint/analyzer/pull/490#discussion_r875554284 *) *)
-                S.Dom.narrow old eqd
-            else
-              box old eqd
+            else (
+              if tracing then trace "wpoint" "widening %a" S.Var.pretty_trace x;
+              if term then
+                match phase with
+                | Widen -> S.Dom.widen old (S.Dom.join old eqd)
+                | Narrow when GobConfig.get_bool "exp.no-narrow" -> old (* no narrow *)
+                | Narrow ->
+                  (* assert S.Dom.(leq eqd old || not (leq old eqd)); (* https://github.com/goblint/analyzer/pull/490#discussion_r875554284 *) *)
+                  S.Dom.narrow old eqd
+              else
+                box old eqd
+            )
           in
           if tracing then trace "sol" "Var: %a (wp: %b)\nOld value: %a\nEqd: %a\nNew value: %a" S.Var.pretty_trace x wp S.Dom.pretty old S.Dom.pretty eqd S.Dom.pretty wpd;
           if not (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old wpd) ()) then ( (* value changed *)
