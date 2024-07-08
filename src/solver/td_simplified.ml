@@ -141,7 +141,7 @@ module Base : GenericEqSolver =
       in
 
       let add_infl y x =
-        if tracing then trace "sol2" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
+        if tracing then trace "infl" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
         LHM.replace infl y (VS.add x (try LHM.find infl y with Not_found -> VS.empty));
       in
 
@@ -166,8 +166,10 @@ module Base : GenericEqSolver =
         LHM.replace infl x VS.empty;
         VS.iter (fun y ->
             if tracing then trace "sol2" "stable remove %a" S.Var.pretty_trace y;
+            if tracing then trace "destab" "destabilizing %a" S.Var.pretty_trace y;
             LHM.remove stable y;
-            if not (LHM.mem called y) then destabilize y
+            (* TODO: in td3 only deep destab when uncalled. Removed to be consistent with other solvers *)
+            destabilize y
           ) w
       in
 
@@ -183,6 +185,7 @@ module Base : GenericEqSolver =
             ) else (
               if tracing then trace "called" "query setting prio from 10 to 9 for %a" S.Var.pretty_trace y;
               LHM.replace called y ();
+              if tracing then trace "iter" "iterate called from query";
               iterate y Widen;
               if tracing then trace "called" "query setting prio back from 9 to 10 for %a" S.Var.pretty_trace y;
               LHM.remove called y)
@@ -198,6 +201,7 @@ module Base : GenericEqSolver =
           let tmp = LHM.find rho y in
           add_infl y x;
           if tracing then trace "sol2" "query %a ## %a -> %a" S.Var.pretty_trace x S.Var.pretty_trace y S.Dom.pretty tmp;
+          if tracing then trace "called" "exiting query for %a" S.Var.pretty_trace y;
           tmp
         in
 
@@ -209,6 +213,7 @@ module Base : GenericEqSolver =
           assert (S.system y = None);
           init y;
           let widen a b =
+            if M.tracing then M.trace "sidew" "side widen %a" S.Var.pretty_trace y;
             if M.tracing then M.traceli "sol2" "side widen %a %a" S.Dom.pretty a S.Dom.pretty b;
             let r = S.Dom.widen a (S.Dom.join a b) in
             if M.tracing then M.traceu "sol2" "-> %a" S.Dom.pretty r;
@@ -272,24 +277,29 @@ module Base : GenericEqSolver =
             )
           in
           if tracing then trace "sol" "Var: %a (wp: %b)\nOld value: %a\nEqd: %a\nNew value: %a" S.Var.pretty_trace x wp S.Dom.pretty old S.Dom.pretty eqd S.Dom.pretty wpd;
-          if not (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old wpd) ()) then ( (* value changed *)
+          if not (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old wpd) ()) then ( 
+            (* old != wpd *)
             if tracing then trace "sol" "Changed";
             (* if tracing && not (S.Dom.is_bot old) && LHM.mem wpoint x then trace "solchange" "%a (wpx: %b): %a -> %a" S.Var.pretty_trace x (LHM.mem wpoint x) S.Dom.pretty old S.Dom.pretty wpd; *)
             if tracing && not (S.Dom.is_bot old) && LHM.mem wpoint x then trace "solchange" "%a (wpx: %b): %a" S.Var.pretty_trace x (LHM.mem wpoint x) S.Dom.pretty_diff (wpd, old);
             update_var_event x old wpd;
             LHM.replace  rho x wpd;
             destabilize x;
+            if tracing then trace "iter" "iterate changed";
             (iterate[@tailcall]) x phase
           ) else (
+            (* old == wpd *)
             (* TODO: why non-equal and non-stable checks in switched order compared to TD3 paper? *)
             if not (LHM.mem stable x) then ( (* value unchanged, but not stable, i.e. destabilized itself during rhs *)
               if tracing then trace "sol2" "iterate still unstable %a" S.Var.pretty_trace x;
+              if tracing then trace "iter" "iterate still unstable";
               (iterate[@tailcall]) x Widen
             ) else (
               if term && phase = Widen && LHM.mem wpoint x then ( (* TODO: or use wp? *)
                 if tracing then trace "sol2" "iterate switching to narrow %a" S.Var.pretty_trace x;
                 if tracing then trace "sol2" "stable remove %a" S.Var.pretty_trace x;
                 LHM.remove stable x;
+                if tracing then trace "iter" "iterate narrow";
                 (iterate[@tailcall]) ~reuse_eq:eqd x Narrow
               ) else if remove_wpoint && (not term || phase = Narrow) then ( (* this makes e.g. nested loops precise, ex. tests/regression/34-localization/01-nested.c - if we do not remove wpoint, the inner loop head will stay a wpoint and widen the outer loop variable. *)
                 if tracing then trace "sol2" "iterate removing wpoint %a (%b)" S.Var.pretty_trace x (LHM.mem wpoint x);
@@ -327,7 +337,9 @@ module Base : GenericEqSolver =
             Logs.newline ();
             flush_all ();
           );
-          List.iter (fun x -> LHM.replace called x (); iterate x Widen; LHM.remove called x) unstable_vs;
+          List.iter (fun x -> LHM.replace called x ();
+                      if tracing then trace "multivar" "solving for %a" S.Var.pretty_trace x;
+                      iterate x Widen; LHM.remove called x) unstable_vs;
           solver ();
         )
       in
