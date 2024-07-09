@@ -133,11 +133,6 @@ module Base : GenericEqSolver =
         print_data data
       )
 
-    type phase = Widen | Narrow [@@deriving show] (* used in iterate *)
-
-    module CurrentVarS = ConstrSys.CurrentVarEqConstrSys (S)
-    module S = CurrentVarS.S
-
     let solve st vs =
       let data = create_empty_solver_data ()
       in
@@ -354,9 +349,9 @@ module Base : GenericEqSolver =
       in
 
       let start_threads x =
-          let threads = Array.init nr_threads (fun j ->
+        let threads = Array.init nr_threads (fun j ->
             Thread.create (fun () -> solve_thread x j) ()) in 
-          Array.iter Thread.join threads
+        Array.iter Thread.join threads
       in
 
       (* Imperative part starts here*)

@@ -331,3 +331,29 @@ module EqIncrSolverFromEqSolver (Sol: GenericEqSolver): GenericEqIncrSolver =
       Post.post xs vs vh;
       (vh, ())
   end
+
+(** Same as [EqIncrSolverFromEqSolver] but for solvers for creating eq constr systems
+    It will solve from scratch, perform standard postsolving and have no marshal data. *)
+module CreatingEqIncrSolverFromCreatingEqSolver (Sol: GenericCreatingEqSolver): GenericCreatingEqIncrSolver =
+  functor (Arg: IncrSolverArg) (S: CreatingEqConstrSys) (VH: Hashtbl.S with type key = S.v) ->
+  struct
+    module Sol = Sol (S) (VH)
+    module Post = MakeList (ListArgFromStdArg (EqConstrSysFromCreatingEqConstrSys (S)) (VH) (Arg))
+
+    type marshal = unit
+    let copy_marshal () = ()
+    let relift_marshal () = ()
+
+    let solve xs vs _ =
+      let vh = Sol.solve xs vs in
+      Post.post xs vs vh;
+      (vh, ())
+  end
+
+(** Convert an incremental solver into an incremental solver for creating eq constr systems.
+    It will provide "None" as the create function to the eq sys. The eq sys substitutes the application create with an equivalent applications of the get function *)
+module CreatingEqIncrSolverFromEqIncrSolver (Sol: GenericEqIncrSolver): GenericCreatingEqIncrSolver =
+  functor (Arg: IncrSolverArg) (S: CreatingEqConstrSys) (VH: Hashtbl.S with type key = S.v) ->
+  struct
+    include Sol (Arg) (EqConstrSysFromCreatingEqConstrSys (S)) (VH)
+  end

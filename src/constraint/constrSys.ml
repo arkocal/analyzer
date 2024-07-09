@@ -74,6 +74,21 @@ sig
   val sys_change: (LVar.t -> D.t) -> (GVar.t -> G.t) -> [`L of LVar.t | `G of GVar.t] sys_change_info
 end
 
+module type GenericCreatingEqIncrSolverBase =
+  functor (S:CreatingEqConstrSys) ->
+  functor (H:Hashtbl.S with type key=S.v) ->
+  sig
+    type marshal
+
+    val copy_marshal: marshal -> marshal
+    val relift_marshal: marshal -> marshal
+
+    (** The hash-map that is the first component of [solve xs vs] is a local solution for interesting variables [vs],
+        reached from starting values [xs].
+        As a second component the solver returns data structures for incremental serialization. *)
+    val solve : (S.v*S.d) list -> S.v list -> marshal option -> S.d H.t * marshal
+  end
+
 (** A solver is something that can translate a system into a solution (hash-table).
     Incremental solver has data to be marshaled. *)
 module type GenericEqIncrSolverBase =
@@ -101,6 +116,11 @@ sig
 end
 
 (** An incremental solver takes the argument about postsolving. *)
+module type GenericCreatingEqIncrSolver =
+  functor (Arg: IncrSolverArg) ->
+    GenericCreatingEqIncrSolverBase
+
+(** An incremental solver takes the argument about postsolving. *)
 module type GenericEqIncrSolver =
   functor (Arg: IncrSolverArg) ->
     GenericEqIncrSolverBase
@@ -108,6 +128,16 @@ module type GenericEqIncrSolver =
 (** A solver is something that can translate a system into a solution (hash-table) *)
 module type GenericEqSolver =
   functor (S:EqConstrSys) ->
+  functor (H:Hashtbl.S with type key=S.v) ->
+  sig
+    (** The hash-map that is the first component of [solve xs vs] is a local solution for interesting variables [vs],
+        reached from starting values [xs]. *)
+    val solve : (S.v*S.d) list -> S.v list -> S.d H.t
+  end
+
+(** A solver is something that can translate a system into a solution (hash-table). This one can solve creating eq systems *)
+module type GenericCreatingEqSolver =
+  functor (S:CreatingEqConstrSys) ->
   functor (H:Hashtbl.S with type key=S.v) ->
   sig
     (** The hash-map that is the first component of [solve xs vs] is a local solution for interesting variables [vs],
@@ -265,12 +295,12 @@ struct
 end
 
 (** Transforms a [GenericEqIncrSolver] into a [GenericGlobSolver]. *)
-module GlobSolverFromEqSolver (Sol:GenericEqIncrSolverBase)
+module GlobSolverFromEqSolver (Sol:GenericCreatingEqIncrSolverBase)
   = functor (S:GlobConstrSys) ->
     functor (LH:Hashtbl.S with type key=S.LVar.t) ->
     functor (GH:Hashtbl.S with type key=S.GVar.t) ->
     struct
-      module EqSys = EqConstrSysFromCreatingEqConstrSys (CreatingEqConstrSysFromGlobConstrSys (S))
+      module EqSys = CreatingEqConstrSysFromGlobConstrSys (S)
 
       module VH : Hashtbl.S with type key=EqSys.v = Hashtbl.Make(EqSys.Var)
       module Sol' = Sol (EqSys) (VH)
