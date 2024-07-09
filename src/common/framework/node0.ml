@@ -19,4 +19,4 @@ let location (node: t) =
   | Function fd -> fd.svar.vdecl
   | FunctionEntry fd -> fd.svar.vdecl
 
-let current_node: t option ref = ref None
+let current_node: t option Domain.DLS.key = Domain.DLS.new_key (fun () -> None)

@@ -50,7 +50,7 @@ struct
     if !AnalysisState.postsolving then
       sideg (GVar.contexts f) (G.create_contexts (G.CSet.singleton c))
 
-  let common_man var edge prev_node pval (getl:lv -> ld) sidel getg sideg : (D.t, S.G.t, S.C.t, S.V.t) man * D.t list ref * (lval option * varinfo * exp list * D.t * bool) list ref =
+  let common_man var edge prev_node pval (getl:lv -> ld) sidel createl getg sideg : (D.t, S.G.t, S.C.t, S.V.t) man * D.t list ref * (lval option * varinfo * exp list * D.t * bool) list ref =
     let r = ref [] in
     let spawns = ref [] in
     (* now watch this ... *)
@@ -78,7 +78,11 @@ struct
           | fd ->
             let c = S.context man fd d in
             sidel (FunctionEntry fd, c) d;
-            ignore (getl (Function fd, c))
+            if Messages.tracing then Messages.trace "createl" "create %s" f.vname;
+            begin match createl with
+              | Some cl -> cl (Function fd, c)
+              | None -> ignore (getl (Function fd, c))
+            end;
           | exception Not_found ->
             (* unknown function *)
             M.error ~category:Imprecise ~tags:[Category Unsound] "Created a thread from unknown function %s" f.vname;
@@ -131,13 +135,13 @@ struct
 
   let common_joins man ds splits spawns = common_join man (bigsqcup ds) splits spawns
 
-  let tf_assign var edge prev_node lv e getl sidel getg sideg d =
-    let man, r, spawns = common_man var edge prev_node d getl sidel getg sideg in
+  let tf_assign var edge prev_node lv e getl sidel createl getg sideg d =
+    let man, r, spawns = common_man var edge prev_node d getl sidel createl getg sideg in
     let d = S.assign man lv e in (* Force transfer function to be evaluated before dereferencing in common_join argument. *)
     common_join man d !r !spawns
 
-  let tf_vdecl var edge prev_node v getl sidel getg sideg d =
-    let man, r, spawns = common_man var edge prev_node d getl sidel getg sideg in
+  let tf_vdecl var edge prev_node v getl sidel createl getg sideg d =
+    let man, r, spawns = common_man var edge prev_node d getl sidel createl getg sideg in
     let d = S.vdecl man v in (* Force transfer function to be evaluated before dereferencing in common_join argument. *)
     common_join man d !r !spawns
 
@@ -152,8 +156,8 @@ struct
     let nval = S.sync { man with local = spawning_return } `Return in
     nval
 
-  let tf_ret var edge prev_node ret fd getl sidel getg sideg d =
-    let man, r, spawns = common_man var edge prev_node d getl sidel getg sideg in
+  let tf_ret var edge prev_node ret fd getl sidel createl getg sideg d =
+    let man, r, spawns = common_man var edge prev_node d getl sidel createl getg sideg in
     let d = (* Force transfer function to be evaluated before dereferencing in common_join argument. *)
       if (CilType.Fundec.equal fd MyCFG.dummy_func ||
           List.mem fd.svar.vname (get_string_list "mainfun")) &&
@@ -163,17 +167,17 @@ struct
     in
     common_join man d !r !spawns
 
-  let tf_entry var edge prev_node fd getl sidel getg sideg d =
+  let tf_entry var edge prev_node fd getl sidel createl getg sideg d =
     (* Side effect function context here instead of at sidel to FunctionEntry,
        because otherwise context for main functions (entrystates) will be missing or pruned during postsolving. *)
     let c: unit -> S.C.t = snd var |> Obj.obj in
     side_context sideg fd (c ());
-    let man, r, spawns = common_man var edge prev_node d getl sidel getg sideg in
+    let man, r, spawns = common_man var edge prev_node d getl sidel createl getg sideg in
     let d = S.body man fd in (* Force transfer function to be evaluated before dereferencing in common_join argument. *)
     common_join man d !r !spawns
 
-  let tf_test var edge prev_node e tv getl sidel getg sideg d =
-    let man, r, spawns = common_man var edge prev_node d getl sidel getg sideg in
+  let tf_test var edge prev_node e tv getl sidel createl getg sideg d =
+    let man, r, spawns = common_man var edge prev_node d getl sidel createl getg sideg in
     let d = S.branch man e tv in (* Force transfer function to be evaluated before dereferencing in common_join argument. *)
     common_join man d !r !spawns
 
@@ -245,8 +249,8 @@ struct
 
   let tf_special_call man lv f args = S.special man lv f args
 
-  let tf_proc var edge prev_node lv e args getl sidel getg sideg d =
-    let man, r, spawns = common_man var edge prev_node d getl sidel getg sideg in
+  let tf_proc var edge prev_node lv e args getl sidel createl getg sideg d =
+    let man, r, spawns = common_man var edge prev_node d getl sidel createl getg sideg in
     let functions =
       match e with
       | Lval (Var v, NoOffset) ->
@@ -292,17 +296,17 @@ struct
     end else
       common_joins man funs !r !spawns
 
-  let tf_asm var edge prev_node getl sidel getg sideg d =
-    let man, r, spawns = common_man var edge prev_node d getl sidel getg sideg in
+  let tf_asm var edge prev_node getl sidel createl getg sideg d =
+    let man, r, spawns = common_man var edge prev_node d getl sidel createl getg sideg in
     let d = S.asm man in (* Force transfer function to be evaluated before dereferencing in common_join argument. *)
     common_join man d !r !spawns
 
-  let tf_skip var edge prev_node getl sidel getg sideg d =
-    let man, r, spawns = common_man var edge prev_node d getl sidel getg sideg in
+  let tf_skip var edge prev_node getl sidel createl getg sideg d =
+    let man, r, spawns = common_man var edge prev_node d getl sidel createl getg sideg in
     let d = S.skip man in (* Force transfer function to be evaluated before dereferencing in common_join argument. *)
     common_join man d !r !spawns
 
-  let tf var getl sidel getg sideg prev_node edge d =
+  let tf var getl sidel createl getg sideg prev_node edge d =
     begin match edge with
       | Assign (lv,rv) -> tf_assign var edge prev_node lv rv
       | VDecl (v)      -> tf_vdecl var edge prev_node v
@@ -312,7 +316,7 @@ struct
       | Test (p,b)     -> tf_test var edge prev_node p b
       | ASM (_, _, _)  -> tf_asm var edge prev_node (* TODO: use ASM fields for something? *)
       | Skip           -> tf_skip var edge prev_node
-    end getl sidel getg sideg d
+    end getl sidel createl getg sideg d
 
   type Goblint_backtrace.mark += TfLocation of location
 
@@ -322,7 +326,7 @@ struct
       | _ -> None (* for other marks *)
     )
 
-  let tf var getl sidel getg sideg prev_node (_,edge) d (f,t) =
+  let tf var getl sidel createl getg sideg prev_node (_,edge) d (f,t) =
     let old_loc  = !Goblint_tracing.current_loc in
     let old_loc2 = !Goblint_tracing.next_loc in
     Goblint_tracing.current_loc := f;
@@ -331,31 +335,31 @@ struct
         Goblint_tracing.current_loc := old_loc;
         Goblint_tracing.next_loc := old_loc2
       ) (fun () ->
-        let d       = tf var getl sidel getg sideg prev_node edge d in
+        let d       = tf var getl sidel createl getg sideg prev_node edge d in
         d
       )
 
-  let tf (v,c) (edges, u) getl sidel getg sideg =
+  let tf (v,c) (edges, u) getl sidel createl getg sideg =
     let pval = getl (u,c) in
     let _, locs = List.fold_right (fun (f,e) (t,xs) -> f, (f,t)::xs) edges (Node.location v,[]) in
-    List.fold_left2 (|>) pval (List.map (tf (v,Obj.repr (fun () -> c)) getl sidel getg sideg u) edges) locs
+    List.fold_left2 (|>) pval (List.map (tf (v,Obj.repr (fun () -> c)) getl sidel createl getg sideg u) edges) locs
 
-  let tf (v,c) (e,u) getl sidel getg sideg =
-    let old_node = !current_node in
+  let tf (v,c) (e,u) getl sidel createl getg sideg =
+    let old_node = Domain.DLS.get @@ current_node in
     let old_fd = Option.map Node.find_fundec old_node |? Cil.dummyFunDec in
     let new_fd = Node.find_fundec v in
     if not (CilType.Fundec.equal old_fd new_fd) then
       Timing.Program.enter new_fd.svar.vname;
     let old_context = !M.current_context in
-    current_node := Some u;
+    Domain.DLS.set current_node (Some u);
     M.current_context := Some (Obj.magic c); (* magic is fine because Spec is top-level Control Spec *)
     Fun.protect ~finally:(fun () ->
-        current_node := old_node;
+        Domain.DLS.set current_node old_node;
         M.current_context := old_context;
         if not (CilType.Fundec.equal old_fd new_fd) then
           Timing.Program.exit new_fd.svar.vname
       ) (fun () ->
-        let d       = tf (v,c) (e,u) getl sidel getg sideg in
+        let d       = tf (v,c) (e,u) getl sidel createl getg sideg in
         d
       )
 
@@ -364,8 +368,8 @@ struct
     | FunctionEntry _ ->
       None
     | _ ->
-      let tf getl sidel getg sideg =
-        let tf' eu = tf (v,c) eu getl sidel getg sideg in
+      let tf getl sidel createl getg sideg =
+        let tf' eu = tf (v,c) eu getl sidel createl getg sideg in
 
         match NodeH.find_option CfgTools.node_scc_global v with
         | Some scc when NodeH.mem scc.prev v && NodeH.length scc.prev = 1 ->

@@ -15,7 +15,7 @@ module Pred = struct
 
   let of_node = singleton % Node.location
 
-  let of_current_node () = of_node @@ Option.get !MyCFG.current_node
+  let of_current_node () = of_node @@ Option.get @@ Domain.DLS.get MyCFG.current_node
 
   let string_of_elt (loc:Base.t) =
     let f i = (if i < 0 then "n" else "") ^ string_of_int (abs i) in

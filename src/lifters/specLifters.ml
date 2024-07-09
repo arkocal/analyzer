@@ -330,12 +330,12 @@ struct
   let h = H.create 13
   let incr k =
     H.modify_def 1 k (fun v ->
-        if v >= !limit then failwith (GobPretty.sprintf "LimitLifter: Reached limit (%d) for node %a" !limit Node.pretty_plain_short (Option.get !MyCFG.current_node));
+        if v >= !limit then failwith (GobPretty.sprintf "LimitLifter: Reached limit (%d) for node %a" !limit Node.pretty_plain_short (Option.get @@ Domain.DLS.get MyCFG.current_node));
         v+1
       ) h;
   module D = struct
     include S.D
-    let widen x y = Option.may incr !MyCFG.current_node; widen x y (* when is this None? *)
+    let widen x y = Option.may incr @@ Domain.DLS.get MyCFG.current_node; widen x y (* when is this None? *)
   end
 end
 
