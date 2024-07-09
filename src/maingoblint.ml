@@ -168,6 +168,7 @@ let check_arguments () =
   if String.starts_with (get_string "solver") "td_parallel" || get_string "solver" = "td_simplified" then (
     Logs.info "The constraint system will be solved with a parallelized solver.";
     (* all parallel solvers unsupported *)
+    if get_bool "allfuns" || get_bool "nonstatic" then fail "Parallel solvers cannot solve for multiple variables. Thus they are incompatible with 'allfuns' and 'nonstatic'.";
     if get_bool "ana.opt.hashcons" then (set_bool "ana.opt.hashcons" false; warn "Hashconsing is disabled when using a parallelized solver!");
     if get_bool "solvers.td3.space" then warn "Option 'solvers.td3.space' is not supported for parallelized solvers and will be ignored.";
     if get_bool "incremental.load" then warn "Parallelized solvers do not support incremental loading. Loaded data will be ignored.";
