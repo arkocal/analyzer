@@ -335,12 +335,12 @@ struct
   let h = H.create 13
   let incr k =
     H.modify_def 1 k (fun v ->
-        if v >= !limit then failwith (GobPretty.sprintf "LimitLifter: Reached limit (%d) for node %a" !limit Node.pretty_plain_short (Option.get !MyCFG.current_node));
+        if v >= !limit then failwith (GobPretty.sprintf "LimitLifter: Reached limit (%d) for node %a" !limit Node.pretty_plain_short (Option.get @@ Domain.DLS.get MyCFG.current_node));
         v+1
       ) h;
   module D = struct
     include S.D
-    let widen x y = Option.may incr !MyCFG.current_node; widen x y (* when is this None? *)
+    let widen x y = Option.may incr @@ Domain.DLS.get MyCFG.current_node; widen x y (* when is this None? *)
   end
 end
 
@@ -925,16 +925,16 @@ struct
     List.fold_left2 (|>) pval (List.map (tf (v,Obj.repr (fun () -> c)) getl sidel createl getg sideg u) edges) locs
 
   let tf (v,c) (e,u) getl sidel createl getg sideg =
-    let old_node = !current_node in
+    let old_node = Domain.DLS.get @@ current_node in
     let old_fd = Option.map Node.find_fundec old_node |? Cil.dummyFunDec in
     let new_fd = Node.find_fundec v in
     if not (CilType.Fundec.equal old_fd new_fd) then
       Timing.Program.enter new_fd.svar.vname;
     let old_context = !M.current_context in
-    current_node := Some u;
+    Domain.DLS.set current_node (Some u);
     M.current_context := Some (Obj.magic c); (* magic is fine because Spec is top-level Control Spec *)
     Fun.protect ~finally:(fun () ->
-        current_node := old_node;
+        Domain.DLS.set current_node old_node;
         M.current_context := old_context;
         if not (CilType.Fundec.equal old_fd new_fd) then
           Timing.Program.exit new_fd.svar.vname

@@ -2866,7 +2866,7 @@ struct
 
       (* Projection to Precision of the Caller *)
       let p = PrecisionUtil.int_precision_from_node () in (* Since f is the fundec of the Callee we have to get the fundec of the current Node instead *)
-      let callerFundec = match !MyCFG.current_node with
+      let callerFundec = match Domain.DLS.get MyCFG.current_node with
         | Some n -> Node.find_fundec n
         | None -> failwith "callerfundec not found"
       in
@@ -2889,7 +2889,7 @@ struct
 
       (* Projection to Precision of the Caller *)
       let p = PrecisionUtil.int_precision_from_node () in (* Since f is the fundec of the Callee we have to get the fundec of the current Node instead *)
-      let callerFundec = match !MyCFG.current_node with
+      let callerFundec = match Domain.DLS.get MyCFG.current_node with
         | Some n -> Node.find_fundec n
         | None -> failwith "callerfundec not found"
       in

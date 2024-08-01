@@ -264,7 +264,7 @@ end = struct
 
   let get ctx =
     let d : PthreadDomain.D.t = ctx.local in
-    let node = Option.get !MyCFG.current_node in
+    let node = Option.get @@ Domain.DLS.get MyCFG.current_node in
     let fundec = Node.find_fundec node in
     let thread_name =
       let cur_tid =
@@ -905,7 +905,7 @@ module Spec : Analyses.MCPSpec = struct
     let should_ignore_assigns = GobConfig.get_bool "ana.extract-pthread.ignore_assign" in
     if PthreadDomain.D.is_bot ctx.local || should_ignore_assigns
     then ctx.local
-    else if Option.is_none !MyCFG.current_node
+    else if Option.is_none @@ Domain.DLS.get MyCFG.current_node
     then (
       (* it is global var assignment *)
       let var_opt = Variable.make_from_lval lval in
