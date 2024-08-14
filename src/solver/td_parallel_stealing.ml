@@ -147,6 +147,7 @@ module Base : GenericEqSolver =
                 LHM.replace stable y prio
               ) else (
                 if tracing then trace "called" "%d query setting prio from %d to %d for %a" prio (called_prio y) prio S.Var.pretty_trace y;
+                init y;
                 LHM.replace called y prio;
                 if tracing then trace "lock" "%d unlocking %a in query" prio S.Var.pretty_trace y;
                 LHM.unlock y rho;
@@ -178,12 +179,12 @@ module Base : GenericEqSolver =
               Logs.warn "side-effect to unknown w/ rhs: %a, contrib: %a" S.Var.pretty_trace y S.Dom.pretty d;
             );
             assert (S.system y = None);
+            if tracing then trace "lock" "%d locking %a in side" prio S.Var.pretty_trace y;
+            LHM.lock y rho;
             init y;
 
             (* begining of side *)
             (* TODO check if this works *)
-            if tracing then trace "lock" "%d locking %a in side" prio S.Var.pretty_trace y;
-            LHM.lock y rho;
             if (called_prio y >= prio) then (
               if tracing then trace "called" "%d side setting prio from %d to %d for %a" prio (called_prio y) prio S.Var.pretty_trace y;
               LHM.replace called y prio;
