@@ -283,8 +283,9 @@ module Base : GenericEqSolver =
 
       let start_threads x =
         let threads = Array.init nr_threads (fun j ->
-            Thread.create (fun () -> solve_thread x j) ()) in 
-        Array.iter Thread.join threads
+            Domain.spawn (fun () -> solve_thread x j)
+          ) in 
+        Array.iter Domain.join threads
       in
 
       (* Imperative part starts here*)
