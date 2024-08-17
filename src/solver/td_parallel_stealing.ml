@@ -82,15 +82,14 @@ module Base : GenericEqSolver =
       in
 
       let init x =
-        if tracing then trace "sol2" "init %a" S.Var.pretty_trace x;
         if not (LHM.mem rho x) then (
           new_var_event x;
+          if tracing then trace "init" "initializing %a(%d)" S.Var.pretty_trace x (S.Var.hash x);
           LHM.replace rho x (S.Dom.bot ())
         )
       in
 
       let eq x get set =
-        if tracing then trace "sol2" "eq %a" S.Var.pretty_trace x;
         match S.system x with
         | None -> S.Dom.bot ()
         | Some f -> f get set
@@ -114,14 +113,12 @@ module Base : GenericEqSolver =
         in
 
         let rec destabilize x =
-          if tracing then trace "sol2" "%d destabilize %a" prio S.Var.pretty_trace x;
           let w = HM.find_default infl x VS.empty in
           HM.replace infl x VS.empty;
           VS.iter (fun y ->
               if tracing then trace "lock" "%d locking %a in destab" prio S.Var.pretty_trace y;
               LHM.lock y rho;
               if (prio <= stable_prio y) then (
-                if tracing then trace "sol2" "%d stable remove %a" prio S.Var.pretty_trace y;
                 if tracing then trace "destab" "%d destabilizing %a" prio S.Var.pretty_trace y;
                 LHM.replace stable y lowest_prio
               );
@@ -136,20 +133,20 @@ module Base : GenericEqSolver =
             if tracing then trace "called" "%d entering query with prio %d for %a" prio (called_prio y) S.Var.pretty_trace y;
             if tracing then trace "lock" "%d locking %a in query" prio S.Var.pretty_trace y;
             LHM.lock y rho;
-            if tracing then trace "sol2" "%d query %a ## %a" prio S.Var.pretty_trace x S.Var.pretty_trace y;
             get_var_event y;
             if not (called_prio y <= prio) then (
               (* TODO (see td-parallel repo): check if necessary/enough *)
               (* If owning new, make sure it is not in point *)
-              if tracing then trace "wpoint" "%d query removing wpoint %a (%b)" prio S.Var.pretty_trace y (HM.mem wpoint y);
+              if tracing && (HM.mem wpoint y) then trace "wpoint" "%d query removing wpoint %a" prio S.Var.pretty_trace y;
               if HM.mem wpoint y then HM.remove wpoint y;
-              if tracing then trace "sol2" "%d simple_solve %a (rhs: %b)" prio S.Var.pretty_trace y (S.system y <> None);
               if S.system y = None then (
                 init y;
                 LHM.replace stable y prio
               ) else (
                 if tracing then trace "called" "%d query setting prio from %d to %d for %a" prio (called_prio y) prio S.Var.pretty_trace y;
                 init y;
+                if tracing then trace "own" "%d taking ownership of %a." prio S.Var.pretty_trace y;
+                if tracing && ((called_prio y) != lowest_prio) then trace "steal" "%d stealing %a from %d" prio S.Var.pretty_trace y (called_prio y);
                 LHM.replace called y prio;
                 if tracing then trace "lock" "%d unlocking %a in query" prio S.Var.pretty_trace y;
                 LHM.unlock y rho;
@@ -158,25 +155,26 @@ module Base : GenericEqSolver =
                 iterate y;
                 if tracing then trace "lock" "%d locking %a in query 2" prio S.Var.pretty_trace y;
                 LHM.lock y rho;
-                if (called_prio y >= prio) then 
-                  if tracing then trace "called" "%d query setting prio back from %d to %d for %a" prio (called_prio y) lowest_prio S.Var.pretty_trace y; 
-                LHM.replace called y lowest_prio
+                if (called_prio y >= prio) then (
+                  if tracing then trace "own" "%d giving up ownership of %a." prio S.Var.pretty_trace y;
+                  if tracing then trace "called" "%d query setting prio back from %d to %d for %a" prio (called_prio y) lowest_prio S.Var.pretty_trace y;
+                  LHM.replace called y lowest_prio
+                )
               )
             ) else (
-              if tracing then trace "wpoint" "%d query adding wpoint %a (%b)" prio S.Var.pretty_trace y (HM.mem wpoint y);
+              if tracing && not (HM.mem wpoint y) then trace "wpoint" "%d query adding wpoint %a from %a" prio S.Var.pretty_trace y S.Var.pretty_trace x;
               HM.replace wpoint y ()
             );
             let tmp = LHM.find rho y in
             if tracing then trace "lock" "%d unlocking %a in query 2" prio S.Var.pretty_trace y;
             LHM.unlock y rho;
             add_infl y x;
-            if tracing then trace "sol2" "%d query %a ## %a -> %a" prio S.Var.pretty_trace x S.Var.pretty_trace y S.Dom.pretty tmp;
             if tracing then trace "called" "%d exiting query for %a" prio S.Var.pretty_trace y;
             tmp
           in
 
           let side x y d = (* side from x to y; only to variables y w/o rhs; x only used for trace *)
-            if tracing then trace "sol2" "%d side to %a (wpx: %b) from %a ## value: %a" prio S.Var.pretty_trace y (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
+            if tracing then trace "side" "%d side to %a(%d) (wpx: %b) from %a ## value: %a" prio S.Var.pretty_trace y (S.Var.hash y) (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
             if S.system y <> None then (
               Logs.warn "side-effect to unknown w/ rhs: %a, contrib: %a" S.Var.pretty_trace y S.Dom.pretty d;
             );
@@ -189,6 +187,7 @@ module Base : GenericEqSolver =
             (* TODO check if this works *)
             if (called_prio y >= prio) then (
               if tracing then trace "called" "%d side setting prio from %d to %d for %a" prio (called_prio y) prio S.Var.pretty_trace y;
+              if tracing then trace "ownSide" "%d side taking ownership of %a. Previously owned by %d" prio S.Var.pretty_trace y (called_prio y);
               LHM.replace called y prio;
               let old = LHM.find rho y in
               (* currently any side-effect after the first one will be widened *)
@@ -198,11 +197,12 @@ module Base : GenericEqSolver =
               in 
               let tmp = if HM.mem wpoint y then widen old d else S.Dom.join old d in
               if tracing then trace "lock" "%d unlocking %a in side" prio S.Var.pretty_trace y;
-              if not (S.Dom.leq d old) then (
+              if not (S.Dom.leq tmp old) then (
+                if tracing then trace "updateSide" "%d side setting %a(%d) to %a" prio S.Var.pretty_trace y (S.Var.hash y) S.Dom.pretty tmp;
                 LHM.replace rho y tmp;
                 LHM.unlock y rho;
                 destabilize y;
-                if tracing then trace "wpoint" "%d side adding wpoint %a (%b)" prio S.Var.pretty_trace y (HM.mem wpoint y);
+                if tracing && not (HM.mem wpoint y) then trace "wpoint" "%d side adding wpoint %a from %a" prio S.Var.pretty_trace y S.Var.pretty_trace x;
                 HM.replace wpoint y ()
               ) else (
                 LHM.unlock y rho
@@ -221,7 +221,6 @@ module Base : GenericEqSolver =
           init x;
           assert (S.system x <> None);
           if not (stable_prio x <= prio) then (
-            if tracing then trace "sol2" "%d stable add %a" prio S.Var.pretty_trace x;
             LHM.replace stable x prio;
             (* Here we cache LHM.mem wpoint x before eq. If during eq evaluation makes x wpoint, then be still don't apply widening the first time, but just overwrite.
                It means that the first iteration at wpoint is still precise.
@@ -231,6 +230,7 @@ module Base : GenericEqSolver =
             let wp = HM.mem wpoint x in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
             if tracing then trace "lock" "%d unlocking %a in iterate" prio S.Var.pretty_trace x;
             LHM.unlock x rho;
+            if tracing then trace "eq" "%d eval eq for %a" prio S.Var.pretty_trace x;
             let eqd = eq x (query x) (side x) in
             if tracing then trace "lock" "%d locking %a in iterate 2" prio S.Var.pretty_trace x;
             LHM.lock x rho;
@@ -246,7 +246,8 @@ module Base : GenericEqSolver =
               if (stable_prio x >= prio && called_prio x >= prio) then (
                 if tracing then trace "sol" "%d Changed" prio;
                 update_var_event x old wpd;
-                LHM.replace  rho x wpd;
+                if tracing then trace "update" "%d setting %a to %a" prio S.Var.pretty_trace x S.Dom.pretty wpd;
+                LHM.replace rho x wpd;
                 if tracing then trace "lock" "%d unlocking %a in iterate 2" prio S.Var.pretty_trace x;
                 LHM.unlock x rho;
                 destabilize x;
@@ -262,7 +263,7 @@ module Base : GenericEqSolver =
                 LHM.unlock x rho;
                 (iterate[@tailcall]) x
               ) else (
-                if tracing then trace "wpoint" "%d iterate removing wpoint %a (%b)" prio S.Var.pretty_trace x (HM.mem wpoint x);
+                if tracing && (HM.mem wpoint x) then trace "wpoint" "%d iterate removing wpoint %a" prio S.Var.pretty_trace x;
                 HM.remove wpoint x;
                 if tracing then trace "lock" "%d unlocking %a in iterate 2" prio S.Var.pretty_trace x;
                 LHM.unlock x rho
@@ -277,7 +278,6 @@ module Base : GenericEqSolver =
       in
 
       let set_start (x,d) =
-        if tracing then trace "sol2" "set_start %a ## %a" S.Var.pretty_trace x S.Dom.pretty d;
         init x;
         LHM.replace rho x d;
         LHM.replace stable x highest_prio;
@@ -313,6 +313,10 @@ module Base : GenericEqSolver =
           List.iter (fun x -> (*LHM.replace called x highest_prio;*)
               if tracing then trace "multivar" "solving for %a" S.Var.pretty_trace x;
               start_threads x;
+              if tracing then (
+                trace "multivar" "current mapping:";
+                LHM.iter (fun k v -> trace "multivar" "%a (%d) -----> %a" S.Var.pretty_trace k (S.Var.hash k) S.Dom.pretty v) rho
+              )
               (*LHM.replace called x lowest_prio*)) unstable_vs;
           solver ();
         )
