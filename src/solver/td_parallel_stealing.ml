@@ -17,7 +17,6 @@ open Parallel_util
 (* parameters - TODO: change to goblint options *)
 let lowest_prio = 10
 let highest_prio = 0
-let nr_threads = 2
 let map_size = 1000
 
 module M = Messages
@@ -67,6 +66,9 @@ module Base : GenericEqSolver =
       )
 
     let solve st vs =
+
+      let nr_threads = GobConfig.get_int "solvers.td3.parallel_domains" in
+
       let data = create_empty_solver_data ()
       in
 

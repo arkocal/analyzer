@@ -14,9 +14,6 @@ open Messages
 
 open Parallel_util
 
-(* parameters - TODO: change to goblint options *)
-let nr_threads = 1
-
 module M = Messages
 
 module Base : GenericCreatingEqSolver =
@@ -114,6 +111,9 @@ module Base : GenericCreatingEqSolver =
     type phase = Widen | Narrow [@@deriving show] (* used in iterate *)
 
     let solve st vs =
+
+      let nr_threads = GobConfig.get_int "solvers.td3.parallel_domains" in
+
       let pool = Thread_pool.create nr_threads in
 
       let promises = ref [] in
