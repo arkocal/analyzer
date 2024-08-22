@@ -141,7 +141,7 @@ module Base : GenericCreatingEqSolver =
 
       let add_infl y x =
         if tracing then trace "sol2" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
-        HM.replace infl y (VS.add x (try HM.find infl y with Not_found -> VS.empty));
+        HM.replace infl y (VS.add x (HM.find_default infl y VS.empty));
       in
 
       let init x =
