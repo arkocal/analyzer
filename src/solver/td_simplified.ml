@@ -74,7 +74,7 @@ module Base : GenericEqSolver =
 
       let add_infl y x =
         if tracing then trace "infl" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
-        LHM.replace infl y (VS.add x (try LHM.find infl y with Not_found -> VS.empty));
+        LHM.replace infl y (VS.add x (LHM.find_default infl y VS.empty));
       in
 
       let init x =

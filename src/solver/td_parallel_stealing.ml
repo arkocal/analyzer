@@ -109,7 +109,7 @@ module Base : GenericEqSolver =
 
         let add_infl y x =
           if tracing then trace "infl" "%d add_infl %a %a" prio S.Var.pretty_trace y S.Var.pretty_trace x;
-          HM.replace infl y (VS.add x (try HM.find infl y with Not_found -> VS.empty));
+          HM.replace infl y (VS.add x (HM.find_default infl y VS.empty));
         in
 
         let rec destabilize x =
@@ -139,12 +139,11 @@ module Base : GenericEqSolver =
               (* If owning new, make sure it is not in point *)
               if tracing && (HM.mem wpoint y) then trace "wpoint" "%d query removing wpoint %a" prio S.Var.pretty_trace y;
               if HM.mem wpoint y then HM.remove wpoint y;
+              init y;
               if S.system y = None then (
-                init y;
                 LHM.replace stable y prio
               ) else (
                 if tracing then trace "called" "%d query setting prio from %d to %d for %a" prio (called_prio y) prio S.Var.pretty_trace y;
-                init y;
                 if tracing then trace "own" "%d taking ownership of %a." prio S.Var.pretty_trace y;
                 if tracing && ((called_prio y) != lowest_prio) then trace "steal" "%d stealing %a from %d" prio S.Var.pretty_trace y (called_prio y);
                 LHM.replace called y prio;
@@ -217,8 +216,8 @@ module Base : GenericEqSolver =
           (* begining of iterate *)
           if tracing then trace "lock" "%d locking %a in iterate" prio S.Var.pretty_trace x;
           LHM.lock x rho;
-          if tracing then trace "iter" "%d iterate %a, called: %b, stable: %b, wpoint: %b" prio S.Var.pretty_trace x (called_prio x <= prio) (stable_prio x <= prio) (HM.mem wpoint x);
           init x;
+          if tracing then trace "iter" "%d iterate %a, called: %b, stable: %b, wpoint: %b" prio S.Var.pretty_trace x (called_prio x <= prio) (stable_prio x <= prio) (HM.mem wpoint x);
           assert (S.system x <> None);
           if not (stable_prio x <= prio) then (
             LHM.replace stable x prio;
