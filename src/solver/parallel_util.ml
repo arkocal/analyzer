@@ -42,21 +42,9 @@ struct
   let iter f lhm = Array.iter (fun (_, hm) -> HM.iter f hm) lhm
   let iter_safe f lhm = Array.iter (fun (me, hm) -> Dmutex.lock me; HM.iter f hm; Dmutex.unlock me) lhm
 
-  (*
   let to_hashtbl lhm = 
     let mapping_list = Array.fold (fun acc (_, hm) -> List.append acc (HM.to_list hm)) [] lhm in
     HM.of_list mapping_list
-  *)
-
-  let to_hashtbl lhm = Array.fold (fun acc (_, hm) ->
-      HM.merge (
-        fun k ao bo -> 
-          match ao, bo with
-          | None, None -> None
-          | Some a, None -> ao
-          | None, Some b -> bo
-          | Some a, Some b -> failwith "LockableHashtbl: One key present in multiple buckets"
-      ) acc hm) (HM.create 10) lhm
 
   let lock k lhm = 
     let (me, _) = Array.get lhm (bucket_index lhm k) in
