@@ -112,23 +112,23 @@ module Base : GenericEqSolver =
           HM.replace infl y (VS.add x (HM.find_default infl y VS.empty));
         in
 
-        let rec destabilize x =
+        let rec destabilize ~all x =
           let w = HM.find_default infl x VS.empty in
           HM.replace infl x VS.empty;
           VS.iter (fun y ->
               if tracing then trace "lock" "%d locking %a in destab" prio S.Var.pretty_trace y;
               LHM.lock y rho;
-              if (prio <= stable_prio y) then (
-                if tracing then trace "destab" "%d destabilizing %a" prio S.Var.pretty_trace y;
+              if (all || (prio <= stable_prio y)) && (stable_prio y <> lowest_prio) then (
+                if tracing then trace "destab" "%d destabilizing %a from %d" prio S.Var.pretty_trace y (stable_prio y);
                 LHM.replace stable y lowest_prio
               );
               if tracing then trace "lock" "%d unlocking %a in destab" prio S.Var.pretty_trace y;
               LHM.unlock y rho;
-              destabilize y
+              destabilize ~all y
             ) w
         in
 
-        let rec iterate ?reuse_eq x = (* ~(inner) solve in td3*)
+        let rec iterate x = (* ~(inner) solve in td3*)
           let query x y = (* ~eval in td3 *)
             if tracing then trace "called" "%d entering query with prio %d for %a" prio (called_prio y) S.Var.pretty_trace y;
             if tracing then trace "lock" "%d locking %a in query" prio S.Var.pretty_trace y;
@@ -141,6 +141,7 @@ module Base : GenericEqSolver =
               if HM.mem wpoint y then HM.remove wpoint y;
               init y;
               if S.system y = None then (
+                if tracing then trace "stable" "%d query setting %a stable from %d" prio S.Var.pretty_trace y (stable_prio y);
                 LHM.replace stable y prio
               ) else (
                 if tracing then trace "called" "%d query setting prio from %d to %d for %a" prio (called_prio y) prio S.Var.pretty_trace y;
@@ -200,7 +201,8 @@ module Base : GenericEqSolver =
                 if tracing then trace "updateSide" "%d side setting %a(%d) to %a" prio S.Var.pretty_trace y (S.Var.hash y) S.Dom.pretty tmp;
                 LHM.replace rho y tmp;
                 LHM.unlock y rho;
-                destabilize y;
+                if tracing then trace "destab" "%d destabilize called from side to %a" prio S.Var.pretty_trace y;
+                destabilize ~all:true y;
                 if tracing && not (HM.mem wpoint y) then trace "wpoint" "%d side adding wpoint %a from %a" prio S.Var.pretty_trace y S.Var.pretty_trace x;
                 HM.replace wpoint y ()
               ) else (
@@ -220,6 +222,7 @@ module Base : GenericEqSolver =
           if tracing then trace "iter" "%d iterate %a, called: %b, stable: %b, wpoint: %b" prio S.Var.pretty_trace x (called_prio x <= prio) (stable_prio x <= prio) (HM.mem wpoint x);
           assert (S.system x <> None);
           if not (stable_prio x <= prio) then (
+            if tracing then trace "stable" "%d iterate setting %a stable from %d" prio S.Var.pretty_trace x (stable_prio x);
             LHM.replace stable x prio;
             (* Here we cache LHM.mem wpoint x before eq. If during eq evaluation makes x wpoint, then be still don't apply widening the first time, but just overwrite.
                It means that the first iteration at wpoint is still precise.
@@ -249,7 +252,8 @@ module Base : GenericEqSolver =
                 LHM.replace rho x wpd;
                 if tracing then trace "lock" "%d unlocking %a in iterate 2" prio S.Var.pretty_trace x;
                 LHM.unlock x rho;
-                destabilize x;
+                if tracing then trace "destab" "%d destabilize called from iterate of %a" prio S.Var.pretty_trace x;
+                destabilize ~all:false x;
                 if tracing then trace "iter" "%d iterate changed" prio;
                 (iterate[@tailcall]) x
               ) else (
