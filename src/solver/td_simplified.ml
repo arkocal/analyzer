@@ -105,18 +105,17 @@ module Base : GenericEqSolver =
 
       let rec iterate ?reuse_eq x phase = (* ~(inner) solve in td3*)
         let query x y = (* ~eval in td3 *)
-          let prio = if LHM.mem called y then 9 else 10 in
-          if tracing then trace "called" "entering query with prio %d for %a" prio S.Var.pretty_trace y;
+          if tracing then trace "sol_query" "entering query for %a; stable %b; called %b" S.Var.pretty_trace y (LHM.mem stable y) (LHM.mem called y);
           let simple_solve y =
             if S.system y = None then (
               init y;
               LHM.replace stable y ()
             ) else (
-              if tracing then trace "called" "query setting prio from 10 to 9 for %a" S.Var.pretty_trace y;
+              if tracing then trace "called" "query called %a" S.Var.pretty_trace y;
               LHM.replace called y ();
               if tracing then trace "iter" "iterate called from query";
               iterate y Widen;
-              if tracing then trace "called" "query setting prio back from 9 to 10 for %a" S.Var.pretty_trace y;
+              if tracing then trace "called" "query uncalled %a" S.Var.pretty_trace y;
               LHM.remove called y)
           in
           get_var_event y;
@@ -128,7 +127,8 @@ module Base : GenericEqSolver =
           );
           let tmp = LHM.find rho y in
           add_infl y x;
-          if tracing then trace "called" "exiting query for %a" S.Var.pretty_trace y;
+          if tracing then trace "sol_query" "exiting query for %a" S.Var.pretty_trace y;
+          if tracing then trace "answer" "answer: %a" S.Dom.pretty tmp;
           tmp
         in
 
@@ -197,7 +197,7 @@ module Base : GenericEqSolver =
                 box old eqd
             )
           in
-          if tracing then trace "sol" "Var: %a (wp: %b)\nOld value: %a\nEqd: %a\nNew value: %a" S.Var.pretty_trace x wp S.Dom.pretty old S.Dom.pretty eqd S.Dom.pretty wpd;
+          if tracing then trace "dom_equal" "equal: %b\n old: %a\n new: %a" (S.Dom.equal wpd old) S.Dom.pretty old S.Dom.pretty wpd;
           if not (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old wpd) ()) then ( 
             (* old != wpd *)
             if tracing then trace "sol" "Changed";
@@ -206,7 +206,7 @@ module Base : GenericEqSolver =
             update_var_event x old wpd;
             LHM.replace  rho x wpd;
             destabilize x;
-            if tracing then trace "iter" "iterate changed";
+            if tracing then trace "iter" "iterate changed %a" S.Var.pretty_trace x;
             (iterate[@tailcall]) x phase
           ) else (
             (* old == wpd *)

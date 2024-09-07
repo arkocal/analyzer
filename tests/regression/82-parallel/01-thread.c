@@ -1,3 +1,4 @@
+// PARAM: --set solver td_parallel_stealing
 #include <pthread.h>
 
 void *t_fun(void *arg) {
