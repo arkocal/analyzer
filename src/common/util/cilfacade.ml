@@ -83,8 +83,8 @@ end
 let cleanCilPrinter = new cleanCilPrinterClass
 
 let cleanDumpFile (pp: cilPrinter) (out : out_channel) (outfile: string) file =
-  Pretty.printDepth := 99999;
-  Pretty.fastMode := true;
+  Domain.DLS.set Pretty.printDepth 99999;
+  Domain.DLS.set Pretty.fastMode true;
   iterGlobals file (fun g -> dumpGlobal pp out g);
   flush out
 
