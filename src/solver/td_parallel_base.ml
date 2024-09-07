@@ -103,147 +103,166 @@ module Base : GenericCreatingEqSolver =
         | Some f -> f get set (Some create)
       in
 
-      let rec destabilize prom outer_w =
-        VS.iter (fun y ->
+      (** solves for a single point-of-interest variable (x_poi) *)
+      let solve_single x_poi = 
+
+        (** destabilizes vars from outer_w and their infl. Restarts (from x_poi?), if root was destabilized*)
+        let rec destabilize prom outer_w =
+          VS.iter (fun y ->
+              LHM.lock y rho;
+              let was_stable = LHM.mem stable y in
+              if tracing && was_stable then trace "destab" "stable remove %a" S.Var.pretty_trace y;
+              LHM.remove stable y;
+              if was_stable && not (LHM.mem called y) then (
+                (* destabilize infl *)
+                let inner_w = LHM.find_default infl y VS.empty in
+                LHM.replace infl y VS.empty;
+                let is_root = LHM.mem root y in
+                LHM.unlock y rho;    
+                if is_root then create_task prom x_poi; (* TODO: could this also be y? *)
+                destabilize prom inner_w
+              ) else (
+                LHM.unlock y rho    
+              )
+            ) outer_w
+
+        (** creates a task to solve for y *)
+        and create_task outer_prom y =
+          let job_id = Atomic.fetch_and_add job_id_counter 1 in
+          let work_fun () =
             LHM.lock y rho;
-            if tracing then trace "destab" "destabilizing %a" S.Var.pretty_trace y;
-            LHM.remove stable y;
-            if LHM.mem stable y && not (LHM.mem called y) then (
-              (* destabilize infl *)
-              let inner_w = LHM.find_default infl y VS.empty in
-              LHM.replace infl y VS.empty;
-              let is_root = LHM.mem root y in
-              LHM.unlock y rho;    
-              if is_root then task_solve prom y; (* TODO: in td_parallel repo this is x (the poi variable). I suppose y makes more sense *)
-              destabilize prom inner_w
-            ) else (
-              LHM.unlock y rho    
-            )
-          ) outer_w
-
-      and task_solve outer_prom y =
-        let job_id = Atomic.fetch_and_add job_id_counter 1 in
-        let work_task () =
-          LHM.lock y rho;
-          if LHM.mem called y then (
-            LHM.unlock y rho;
-          ) else (
-            LHM.replace called y ();
-            LHM.replace stable y ();
-            LHM.replace root y ();
-            LHM.unlock y rho;
-            let inner_prom = ref [] in
-            iterate None inner_prom y job_id;
-            Thread_pool.await_all pool (!inner_prom)
-          )
-        in
-        outer_prom := Thread_pool.add_work pool work_task :: (!outer_prom)
-
-      and iterate orig prom x job_id = (* ~(inner) solve in td3*)
-        let query x y = (* ~eval in td3 *)
-          if tracing then trace "called" "entering query for %a" S.Var.pretty_trace y;
-          LHM.lock y rho;
-          get_var_event y;
-          add_infl x y;
-          if LHM.mem called y then (
-            if tracing then trace "sol2" "query adding wpoint %a from %a" S.Var.pretty_trace y S.Var.pretty_trace x;
-            LHM.replace wpoint y (); 
-          ) else if not (LHM.mem stable y) then (
-            if S.system y == None then (
-              init y;
-              LHM.replace stable y ()
+            if LHM.mem called y then (
+              LHM.unlock y rho;
             ) else (
               LHM.replace called y ();
               LHM.replace stable y ();
+              LHM.replace root y ();
               LHM.unlock y rho;
-              if tracing then trace "iter" "iterate called from query";
-              iterate (Some x) prom y job_id;
-              LHM.lock y rho
+              let inner_prom = ref [] in
+              if tracing then trace "iter" "iterate called from create_task";
+              iterate None inner_prom y job_id;
+              Thread_pool.await_all pool (!inner_prom)
             )
-          );
-          let tmp = LHM.find rho y in
-          if tracing then trace "sol2" "query %a ## %a -> %a" S.Var.pretty_trace x S.Var.pretty_trace y S.Dom.pretty tmp;
-          LHM.unlock y rho;
-          if tracing then trace "called" "exiting query for %a" S.Var.pretty_trace y;
-          tmp
-        in
+          in
+          if tracing then trace "Thread_pool" "adding task %d to iterate %a" job_id S.Var.pretty_trace y;
+          outer_prom := Thread_pool.add_work pool work_fun :: (!outer_prom)
 
-        let side x y d = (* side from x to y; only to variables y w/o rhs; x only used for trace *)
-          if tracing then trace "sol2" "side to %a (wpx: %b) from %a ## value: %a" S.Var.pretty_trace y (LHM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
-          if S.system y <> None then (
-            Logs.warn "side-effect to unknown w/ rhs: %a, contrib: %a" S.Var.pretty_trace y S.Dom.pretty d;
-          );
-          assert (S.system y = None);
-          LHM.lock y rho;
-          init y;
-          let old = LHM.find rho y in
-          if S.Dom.leq d old then (
-            LHM.unlock y rho
-          ) else (
-            let widen a b =                 
-              if M.tracing then M.trace "sidew" "%d side widen %a" job_id S.Var.pretty_trace y;
-              S.Dom.widen a (S.Dom.join a b)    
-            in 
-            LHM.replace rho y (widen old d);
-            LHM.replace stable y ();
-            let w = LHM.find_default infl y VS.empty in
-            LHM.replace infl y VS.empty;
+        (** iterates to solve for x (invoked from query to orig if present) *)
+        and iterate orig prom x job_id = (* ~(inner) solve in td3*)
+          let query x y = (* ~eval in td3 *)
+            if tracing then trace "sol_query" "entering query for %a; stable %b; called %b" S.Var.pretty_trace y (LHM.mem stable y) (LHM.mem called y);
+            LHM.lock y rho;
+            get_var_event y;
+            add_infl x y;
+            if LHM.mem called y then (
+              if tracing then trace "sol2" "query adding wpoint %a from %a" S.Var.pretty_trace y S.Var.pretty_trace x;
+              LHM.replace wpoint y (); 
+            ) else if not (LHM.mem stable y) then (
+              if S.system y == None then (
+                init y;
+                LHM.replace stable y ()
+              ) else (
+                LHM.replace called y ();
+                LHM.replace stable y ();
+                LHM.unlock y rho;
+                if tracing then trace "iter" "iterate called from query";
+                iterate (Some x) prom y job_id;
+                LHM.lock y rho
+              )
+            );
+            let tmp = LHM.find rho y in
             LHM.unlock y rho;
-            destabilize prom w
-          )
-        in
+            if tracing then trace "sol_query" "exiting query for %a" S.Var.pretty_trace y;
+            if tracing then trace "answer" "answer: %a" S.Dom.pretty tmp;
+            tmp
+          in
 
-        let create x y = (* create called from x on y *)
-          if tracing then trace "create" "create from td_parallel_base was executed from %a on %a" S.Var.pretty_trace x S.Var.pretty_trace y;
-          task_solve prom y
-        in
+          let side x y d = (* side from x to y; only to variables y w/o rhs; x only used for trace *)
+            if tracing then trace "side" "%d side to %a (wpx: %b) from %a ## value: %a" job_id S.Var.pretty_trace y (LHM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
+            if S.system y <> None then (
+              Logs.warn "side-effect to unknown w/ rhs: %a, contrib: %a" S.Var.pretty_trace y S.Dom.pretty d;
+            );
+            assert (S.system y = None);
+            LHM.lock y rho;
+            init y;
+            let old = LHM.find rho y in
+            if S.Dom.leq d old then (
+              LHM.unlock y rho
+            ) else (
+              let widen a b =                 
+                if M.tracing then M.trace "sidew" "%d side widen %a" job_id S.Var.pretty_trace y;
+                S.Dom.widen a (S.Dom.join a b)    
+              in 
+              LHM.replace rho y (widen old d);
+              LHM.replace stable y ();
+              let w = LHM.find_default infl y VS.empty in
+              LHM.replace infl y VS.empty;
+              LHM.unlock y rho;
+              if tracing then trace "destab" "destabilizing %a" S.Var.pretty_trace y;
+              destabilize prom w
+            )
+          in
 
-        (* begining of iterate*)
-        if tracing then trace "iter" "iterate %a, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (LHM.mem called x) (LHM.mem stable x) (LHM.mem wpoint x);
-        LHM.lock x rho;
-        init x;
-        assert (S.system x <> None);
-        let wp = LHM.mem wpoint x in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
-        LHM.unlock x rho;
-        if tracing then trace "eq" "eval eq for %a" S.Var.pretty_trace x;
-        let eqd = eq x (query x) (side x) (create x) in
-        LHM.lock x rho;
-        let old = LHM.find rho x in
-        let wpd = (* d after box operator (if wp) *)
-          if not wp then 
-            eqd
-          else (if tracing then trace "wpoint" "box widening %a" S.Var.pretty_trace x; box old eqd)
-        in
-        if (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal wpd old) ()) then (
-          (* old = wpd*)
-          if LHM.mem stable x then (
-            Option.may (add_infl x) orig;
-            LHM.remove called x;
-            LHM.remove wpoint x;
-            LHM.unlock x rho
-          ) else (
-            LHM.replace stable x ();
-            LHM.unlock x rho;
-            iterate orig prom x job_id
-          )
-        ) else (
-          (* old != wpd*)
-          LHM.replace rho x wpd;
-          let w = LHM.find_default infl x VS.empty in
-          LHM.replace infl x VS.empty;
-          LHM.unlock x rho;
-          destabilize prom w;
+          let create x y = (* create called from x on y *)
+            if tracing then trace "create" "create from td_parallel_base was executed from %a on %a" S.Var.pretty_trace x S.Var.pretty_trace y;
+            create_task prom y
+          in
+
+          (* begining of iterate*)
+          if tracing then trace "iter" "iterate %a, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (LHM.mem called x) (LHM.mem stable x) (LHM.mem wpoint x);
           LHM.lock x rho;
-          if LHM.mem stable x then (
-            Option.may (add_infl x) orig;
-            LHM.remove called x;
-            LHM.unlock x rho;
+          init x;
+          assert (S.system x <> None);
+          let wp = LHM.mem wpoint x in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
+          LHM.unlock x rho;
+          if tracing then trace "eq" "eval eq for %a" S.Var.pretty_trace x;
+          let eqd = eq x (query x) (side x) (create x) in
+          LHM.lock x rho;
+          let old = LHM.find rho x in
+          let wpd = (* d after box operator (if wp) *)
+            if not wp then 
+              eqd
+            else (if tracing then trace "wpoint" "box widening %a" S.Var.pretty_trace x; box old eqd)
+          in
+          if tracing then trace "dom_equal" "equal: %b\n old: %a\n new: %a" (S.Dom.equal wpd old) S.Dom.pretty old S.Dom.pretty wpd;
+          if (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal wpd old) ()) then (
+            (* old = wpd*)
+            if LHM.mem stable x then (
+              Option.may (add_infl x) orig;
+              LHM.remove called x;
+              LHM.remove wpoint x;
+              LHM.unlock x rho
+            ) else (
+              LHM.replace stable x ();
+              LHM.unlock x rho;if tracing then trace "iter" "iterate still unstable %a" S.Var.pretty_trace x;
+              iterate orig prom x job_id
+            )
           ) else (
-            LHM.replace stable x ();
+            (* old != wpd*)
+            LHM.replace rho x wpd;
+            let w = LHM.find_default infl x VS.empty in
+            LHM.replace infl x VS.empty;
             LHM.unlock x rho;
-            iterate orig prom x job_id
+            if tracing then trace "destab" "destabilizing %a" S.Var.pretty_trace x;
+            destabilize prom w;
+            LHM.lock x rho;
+            if LHM.mem stable x then (
+              Option.may (add_infl x) orig;
+              LHM.remove called x;
+              LHM.unlock x rho;
+            ) else (
+              LHM.replace stable x ();
+              LHM.unlock x rho;
+              if tracing then trace "iter" "iterate changed %a" S.Var.pretty_trace x;
+              iterate orig prom x job_id
+            )
           )
-        )
+        in
+
+        (* beginning of solve_single*)
+        let promises = ref [] in
+        create_task promises x_poi;
+        promises
       in
 
       let set_start (x,d) =
@@ -275,9 +294,8 @@ module Base : GenericCreatingEqSolver =
           );
           List.iter (fun x -> 
               if tracing then trace "multivar" "solving for %a" S.Var.pretty_trace x;
-              let promises = ref [] in
               Domainslib.Task.run pool (fun () -> 
-                  task_solve promises x;
+                  let promises = solve_single x in
                   Thread_pool.await_all pool (!promises)
                 );
             ) unstable_vs;
