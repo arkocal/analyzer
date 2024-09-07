@@ -36,7 +36,7 @@ doc: "https://goblint.readthedocs.io/en/latest/"
 bug-reports: "https://github.com/goblint/analyzer/issues"
 depends: [
   "dune" {>= "3.13"}
-  "ocaml" {>= "4.14"}
+  "ocaml" {>= "5.3.0"}
   "goblint-cil" {>= "2.0.5"}
   "batteries" {>= "3.5.1"}
   "zarith" {>= "1.10"}
@@ -69,6 +69,7 @@ depends: [
   "conf-gcc"
   "domain-local-await"
   "domain_shims"
+  "domainslib"
 ]
 depopts: [
   "apron" {>= "v0.9.15"}
@@ -99,8 +100,10 @@ dev-repo: "git+https://github.com/goblint/analyzer.git"
 # also remember to generate/adjust goblint.opam.locked!
 available: os-family != "bsd" & os-distribution != "alpine" & (arch != "arm64" | os = "macos")
 pin-depends: [
+  # No good reason for this downgrade, we should get this fixed upstream
+  [ "goblint-cil.2.0.5" "git+https://github.com/arkocal/goblint-cil.git#c7c68d74ffb11d81747b51b0c4a922ecbf4e1fc8" ]
   # published goblint-cil 2.0.5 is currently up-to-date, but pinned for reproducibility
-  [ "goblint-cil.2.0.5" "git+https://github.com/goblint/cil.git#f5ee39bd344dc74e2a10e407d877e0ddf73c9c6f" ]
+  # [ "goblint-cil.2.0.5" "git+https://github.com/goblint/cil.git#f5ee39bd344dc74e2a10e407d877e0ddf73c9c6f" ]
   # pinned for stability (https://github.com/goblint/analyzer/issues/1520), remove after new camlidl release
   [ "camlidl.1.12" "git+https://github.com/xavierleroy/camlidl.git#1c1e87e3f56c2c6b3226dd0af3510ef414b462d0" ]
   # pinned for stability (https://github.com/goblint/analyzer/issues/1520), remove after new apron release
