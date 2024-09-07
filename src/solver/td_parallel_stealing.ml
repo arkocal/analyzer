@@ -130,7 +130,7 @@ module Base : GenericEqSolver =
 
         let rec iterate x = (* ~(inner) solve in td3*)
           let query x y = (* ~eval in td3 *)
-            if tracing then trace "called" "%d entering query with prio %d for %a" prio (called_prio y) S.Var.pretty_trace y;
+            if tracing then trace "sol_query" "%d entering query with prio %d for %a" prio (called_prio y) S.Var.pretty_trace y;
             if tracing then trace "lock" "%d locking %a in query" prio S.Var.pretty_trace y;
             LHM.lock y rho;
             get_var_event y;
@@ -169,7 +169,7 @@ module Base : GenericEqSolver =
             if tracing then trace "lock" "%d unlocking %a in query 2" prio S.Var.pretty_trace y;
             LHM.unlock y rho;
             add_infl y x;
-            if tracing then trace "called" "%d exiting query for %a" prio S.Var.pretty_trace y;
+            if tracing then trace "sol_query" "%d exiting query for %a" prio S.Var.pretty_trace y;
             tmp
           in
 
@@ -289,8 +289,16 @@ module Base : GenericEqSolver =
 
       let start_threads x =
         let threads = Array.init nr_threads (fun j ->
-            Domain.spawn (fun () -> solve_thread x j)
-          ) in 
+            Domain.spawn (fun () -> 
+                if Logs.Level.should_log Debug then Printexc.record_backtrace true;
+                Unix.sleepf (Float.mul (float j) 0.25);
+                try
+                  if tracing then trace "start" "%d started" j;
+                  solve_thread x j
+                with 
+                  e -> Printexc.print_backtrace stderr;
+                  raise e
+              )) in 
         Array.iter Domain.join threads
       in
 
