@@ -63,6 +63,12 @@ RichVarinfo
 ContextUtil
 }
 
+{2 Parallelization}
+{!modules:
+Dmutex
+DomainsafeLazy
+}
+
 
 {1 Library extensions}
 
