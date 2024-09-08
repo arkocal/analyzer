@@ -3,12 +3,12 @@ open Batteries
 module LockableHashtbl (H:Hashtbl.HashedType) (HM:Hashtbl.S with type key = H.t) = 
 struct
   type key = HM.key
-  type 'a t = (Dmutex.t * 'a HM.t) array
+  type 'a t = (GobMutex.t * 'a HM.t) array
 
   (* double hash to make sure that not all elements in a top-level bucket have the same hash*)
   let bucket_index lhm k = Int.abs ((Hashtbl.hash (H.hash k)) mod (Array.length lhm))
 
-  let create sz = Array.init sz (fun _ -> Dmutex.create (), HM.create 10)
+  let create sz = Array.init sz (fun _ -> GobMutex.create (), HM.create 10)
 
   let length lhm = Array.fold (fun l (_, hm) -> l + (HM.length hm)) 0 lhm
 
@@ -40,7 +40,7 @@ struct
     HM.mem hm k
 
   let iter f lhm = Array.iter (fun (_, hm) -> HM.iter f hm) lhm
-  let iter_safe f lhm = Array.iter (fun (me, hm) -> Dmutex.lock me; HM.iter f hm; Dmutex.unlock me) lhm
+  let iter_safe f lhm = Array.iter (fun (me, hm) -> GobMutex.lock me; HM.iter f hm; GobMutex.unlock me) lhm
 
   (*
   let to_hashtbl lhm = 
@@ -60,11 +60,11 @@ struct
 
   let lock k lhm = 
     let (me, _) = Array.get lhm (bucket_index lhm k) in
-    Dmutex.lock me
+    GobMutex.lock me
 
   let unlock k lhm = 
     let (me, _) = Array.get lhm (bucket_index lhm k) in
-    Dmutex.unlock me
+    GobMutex.unlock me
 end 
 
 module Thread_pool =

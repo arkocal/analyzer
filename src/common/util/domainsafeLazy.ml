@@ -1,11 +1,11 @@
-type 'a t = Dmutex.t * ('a Stdlib.Lazy.t)
+type 'a t = GobMutex.t * ('a Stdlib.Lazy.t)
 
-let make_lazy expr = (Dmutex.create (), lazy expr)
+let make_lazy expr = (GobMutex.create (), lazy expr)
 
-let from_fun f = (Dmutex.create (), Stdlib.Lazy.from_fun f)
+let from_fun f = (GobMutex.create (), Stdlib.Lazy.from_fun f)
 
 let force (mtx, blk) = 
-  Dmutex.lock mtx; 
+  GobMutex.lock mtx; 
   let value = Stdlib.Lazy.force blk in
-  Dmutex.unlock mtx;
+  GobMutex.unlock mtx;
   value

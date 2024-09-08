@@ -10,7 +10,8 @@
    fpath
    yojson
    yaml
-   qcheck-core)
+   qcheck-core
+   domain-local-await)
  (preprocess
   (pps
    ppx_deriving.std
