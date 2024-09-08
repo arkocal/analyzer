@@ -8,6 +8,7 @@ module GobArray = GobArray
 module GobGc = GobGc
 module GobHashtbl = GobHashtbl
 module GobList = GobList
+module GobMutex = GobMutex
 module GobRef = GobRef
 module GobResult = GobResult
 module GobOption = GobOption

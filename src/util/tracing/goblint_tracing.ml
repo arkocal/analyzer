@@ -14,7 +14,7 @@ module Strs = Set.Make (String)
 let tracing = Goblint_build_info.dune_profile = "trace"
 
 (* mutex to lock tracing *)
-let mutex = Mutex.create ()
+let mutex = GobMutex.create ()
 
 let current_loc = ref locUnknown
 let next_loc    = ref locUnknown
@@ -42,10 +42,10 @@ let traceTag (sys : string) : Pretty.doc =
   (text ((ind !indent_level) ^ "%%% " ^ sys ^ ": "))
 
 let printtrace sys d: unit =
-  Mutex.lock mutex;
+  GobMutex.lock mutex;
   fprint stderr ~width:max_int ((traceTag sys) ++ d ++ line);
   flush stderr;
-  Mutex.unlock mutex
+  GobMutex.unlock mutex
 
 let gtrace always f sys var ?loc do_subsys fmt =
   let cond =
