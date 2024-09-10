@@ -29,6 +29,20 @@ module Base : GenericEqSolver =
     include Generic.SolverStats (S) (HM)
     module VS = Set.Make (S.Var)
     module LHM = LockableHashtbl (S.Var) (HM)
+    module Int_tbl = Hashtbl.Make (
+      struct
+        type t = int
+        let equal = (=)
+        let hash = Hashtbl.hash
+      end
+    )
+    module PLHM = LockableHashtbl (
+      struct
+        type t = int
+        let equal = (=)
+        let hash = Hashtbl.hash
+      end
+  ) (Int_tbl)
 
     (* data of *)
     type solver_data = {
@@ -54,6 +68,7 @@ module Base : GenericEqSolver =
         infl = HM.create 10;
       }
 
+
     let print_data data =
       Logs.debug "|rho|=%d" (LHM.length data.rho);
       Logs.debug "|called|=%d" (LHM.length data.called);
@@ -71,6 +86,8 @@ module Base : GenericEqSolver =
 
       let data = create_empty_solver_data ()
       in
+
+      let iterate_counter = PLHM.create 10 in
 
       let rho = data.rho in
       let stable = data.stable in
@@ -96,6 +113,7 @@ module Base : GenericEqSolver =
       in
 
       let solve_thread x thread_id =
+        let () = PLHM.replace iterate_counter thread_id 0 in
         (* init thread local data *)
         let t_data = create_empty_thread_data ()
         in
@@ -216,6 +234,8 @@ module Base : GenericEqSolver =
 
 
           (* begining of iterate *)
+          let () = PLHM.replace iterate_counter thread_id (PLHM.find iterate_counter thread_id + 1) in
+        if tracing then trace "prio" "%d %d" prio (PLHM.find iterate_counter thread_id);
           if tracing then trace "lock" "%d locking %a in iterate" prio S.Var.pretty_trace x;
           LHM.lock x rho;
           init x;
@@ -299,7 +319,8 @@ module Base : GenericEqSolver =
                   e -> Printexc.print_backtrace stderr;
                   raise e
               )) in 
-        Array.iter Domain.join threads
+      Array.iter Domain.join threads;
+      if tracing then (PLHM.iter (fun k v -> trace "cpri" "Thread %d iterated %d times" k v) iterate_counter)
       in
 
       (* Imperative part starts here*)
