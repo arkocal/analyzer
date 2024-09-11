@@ -106,7 +106,8 @@ module Base : GenericEqSolver =
       let rec iterate ?reuse_eq x phase = (* ~(inner) solve in td3*)
         let query x y = (* ~eval in td3 *)
           if tracing then trace "sol_query" "entering query for %a; stable %b; called %b" S.Var.pretty_trace y (LHM.mem stable y) (LHM.mem called y);
-          let simple_solve y =
+          get_var_event y;
+          if not (LHM.mem called y) then (
             if S.system y = None then (
               init y;
               LHM.replace stable y ()
@@ -117,10 +118,6 @@ module Base : GenericEqSolver =
               iterate y Widen;
               if tracing then trace "called" "query uncalled %a" S.Var.pretty_trace y;
               LHM.remove called y)
-          in
-          get_var_event y;
-          if not (LHM.mem called y) then (
-            simple_solve y
           ) else (
             if tracing && not (LHM.mem wpoint y) then trace "wpoint" "query adding wpoint %a" S.Var.pretty_trace y;
             LHM.replace wpoint y ();

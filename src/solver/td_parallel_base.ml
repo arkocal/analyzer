@@ -89,15 +89,15 @@ module Base : GenericCreatingEqSolver =
       in
 
       let init x =
-        if tracing then trace "sol2" "init %a" S.Var.pretty_trace x;
         if not (LHM.mem rho x) then (
+          if tracing then trace "init" "init %a" S.Var.pretty_trace x;
           new_var_event x;
           LHM.replace rho x (S.Dom.bot ())
         )
       in
 
       let eq x get set create =
-        if tracing then trace "sol2" "eq %a" S.Var.pretty_trace x;
+        if tracing then trace "eq" "eq %a" S.Var.pretty_trace x;
         match S.system x with
         | None -> S.Dom.bot ()
         | Some f -> f get set (Some create)
@@ -111,7 +111,7 @@ module Base : GenericCreatingEqSolver =
           VS.iter (fun y ->
               LHM.lock y rho;
               let was_stable = LHM.mem stable y in
-              if tracing && was_stable then trace "destab" "stable remove %a" S.Var.pretty_trace y;
+              if tracing && was_stable then trace "destab-v" "stable remove %a (root:%b, called:%b)" S.Var.pretty_trace y (LHM.mem root y) (LHM.mem called y);
               LHM.remove stable y;
               if was_stable && not (LHM.mem called y) then (
                 (* destabilize infl *)
@@ -134,31 +134,31 @@ module Base : GenericCreatingEqSolver =
             if LHM.mem called y then (
               LHM.unlock y rho;
             ) else (
+              if tracing then trace "thread_pool" "starting task %d to iterate %a" job_id S.Var.pretty_trace y;
               LHM.replace called y ();
               LHM.replace stable y ();
               LHM.replace root y ();
               LHM.unlock y rho;
               let inner_prom = ref [] in
-              if tracing then trace "iter" "iterate called from create_task";
               iterate None inner_prom y job_id;
-              Thread_pool.await_all pool (!inner_prom)
+              Thread_pool.await_all pool (!inner_prom);
+              if tracing then trace "thread_pool" "finishing task %d" job_id
             )
           in
-          if tracing then trace "Thread_pool" "adding task %d to iterate %a" job_id S.Var.pretty_trace y;
           outer_prom := Thread_pool.add_work pool work_fun :: (!outer_prom)
 
         (** iterates to solve for x (invoked from query to orig if present) *)
         and iterate orig prom x job_id = (* ~(inner) solve in td3*)
           let query x y = (* ~eval in td3 *)
-            if tracing then trace "sol_query" "entering query for %a; stable %b; called %b" S.Var.pretty_trace y (LHM.mem stable y) (LHM.mem called y);
+            if tracing then trace "sol_query" "%d entering query for %a; stable %b; called %b" job_id S.Var.pretty_trace y (LHM.mem stable y) (LHM.mem called y);
             LHM.lock y rho;
             get_var_event y;
-            add_infl x y;
+            add_infl y x;
             if LHM.mem called y then (
               if tracing then trace "sol2" "query adding wpoint %a from %a" S.Var.pretty_trace y S.Var.pretty_trace x;
               LHM.replace wpoint y (); 
             ) else if not (LHM.mem stable y) then (
-              if S.system y == None then (
+              if S.system y = None then (
                 init y;
                 LHM.replace stable y ()
               ) else (
@@ -172,13 +172,14 @@ module Base : GenericCreatingEqSolver =
             );
             let tmp = LHM.find rho y in
             LHM.unlock y rho;
-            if tracing then trace "sol_query" "exiting query for %a" S.Var.pretty_trace y;
+            if tracing then trace "sol_query" " %d exiting query for %a" job_id S.Var.pretty_trace y;
             if tracing then trace "answer" "answer: %a" S.Dom.pretty tmp;
             tmp
           in
 
           let side x y d = (* side from x to y; only to variables y w/o rhs; x only used for trace *)
-            if tracing then trace "side" "%d side to %a (wpx: %b) from %a ## value: %a" job_id S.Var.pretty_trace y (LHM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
+            if tracing then trace "side" "%d side to %a from %a" job_id S.Var.pretty_trace y S.Var.pretty_trace x;
+            if tracing then trace "side-v" "%d side to %a (wpx: %b) from %a ## value: %a" job_id S.Var.pretty_trace y (LHM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
             if S.system y <> None then (
               Logs.warn "side-effect to unknown w/ rhs: %a, contrib: %a" S.Var.pretty_trace y S.Dom.pretty d;
             );
@@ -193,18 +194,19 @@ module Base : GenericCreatingEqSolver =
                 if M.tracing then M.trace "sidew" "%d side widen %a" job_id S.Var.pretty_trace y;
                 S.Dom.widen a (S.Dom.join a b)    
               in 
+              if tracing then trace "update" "%d side update %a with \n\t%a" job_id S.Var.pretty_trace x S.Dom.pretty (widen old d);
               LHM.replace rho y (widen old d);
               LHM.replace stable y ();
               let w = LHM.find_default infl y VS.empty in
               LHM.replace infl y VS.empty;
               LHM.unlock y rho;
-              if tracing then trace "destab" "destabilizing %a" S.Var.pretty_trace y;
+              if tracing then trace "destab" "%d side destabilizing %a" job_id S.Var.pretty_trace y;
               destabilize prom w
             )
           in
 
           let create x y = (* create called from x on y *)
-            if tracing then trace "create" "create from td_parallel_base was executed from %a on %a" S.Var.pretty_trace x S.Var.pretty_trace y;
+            if tracing then trace "create" "create from td_parallel_base was executed from %a on %a (called:%b)" S.Var.pretty_trace x S.Var.pretty_trace y (LHM.mem called y);
             create_task prom y
           in
 
@@ -234,16 +236,18 @@ module Base : GenericCreatingEqSolver =
               LHM.unlock x rho
             ) else (
               LHM.replace stable x ();
-              LHM.unlock x rho;if tracing then trace "iter" "iterate still unstable %a" S.Var.pretty_trace x;
+              LHM.unlock x rho;
+              if tracing then trace "iter" "iterate still unstable %a" S.Var.pretty_trace x;
               iterate orig prom x job_id
             )
           ) else (
             (* old != wpd*)
+            if tracing then trace "update" "%d iterate update %a with \n\t%a" job_id S.Var.pretty_trace x S.Dom.pretty wpd;
             LHM.replace rho x wpd;
             let w = LHM.find_default infl x VS.empty in
             LHM.replace infl x VS.empty;
             LHM.unlock x rho;
-            if tracing then trace "destab" "destabilizing %a" S.Var.pretty_trace x;
+            if tracing then trace "destab" "%d iterate destabilizing %a" job_id S.Var.pretty_trace x;
             destabilize prom w;
             LHM.lock x rho;
             if LHM.mem stable x then (
