@@ -79,7 +79,7 @@ module Base : GenericEqSolver =
       let init x =
         if not (LHM.mem rho x) then (
           new_var_event x;
-          if tracing then trace "init" "initializing %a(%d)" S.Var.pretty_trace x (S.Var.hash x);
+          if tracing then trace "init" "init %a" S.Var.pretty_trace x;
           LHM.replace rho x (S.Dom.bot ())
         )
       in
@@ -123,8 +123,7 @@ module Base : GenericEqSolver =
           );
           let tmp = LHM.find rho y in
           add_infl y x;
-          if tracing then trace "sol_query" "exiting query for %a" S.Var.pretty_trace y;
-          if tracing then trace "answer" "answer: %a" S.Dom.pretty tmp;
+          if tracing then trace "answer" "exiting query for %a\nanswer: %a" S.Var.pretty_trace y S.Dom.pretty tmp;
           tmp
         in
 

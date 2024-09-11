@@ -43,37 +43,42 @@ module Base : GenericCreatingEqSolver =
       let sides = ref []
       let no_observations () = 0
 
-      let mutex = Mutex.create ()
+      let mutex = GobMutex.create ()
+
       let add_side revive (v,d) =
-        Mutex.lock mutex;
+        GobMutex.lock mutex;
         sides := (!next_obs,(v,d)) :: !sides;
         revive ();
-        Mutex.unlock mutex
+        GobMutex.unlock mutex
 
       let process_updates obs f =
-        Mutex.lock mutex;
+        GobMutex.lock mutex;
         let current_sides = !sides in
         (* Could also get this from the map, but we are too lazy for that *)
-        let obs' = !next_obs -1 in
-        Mutex.unlock mutex;
+        let obs' = !next_obs-1 in
+        GobMutex.unlock mutex;
         let rec doit = function
           | [] -> ()
           | (o,_)::_ when o = obs -> ()
-          | (_,(v,d))::tl -> f (v,d); doit tl
+          | (_,(v,d))::tl -> 
+            f (v,d); 
+            doit tl
         in
         doit current_sides;
         obs'
 
       let updates_or_fin suspend obs =
-        Mutex.lock mutex;
+        GobMutex.lock mutex;
+        if tracing then trace "suspend" "next_obs = %d; obs = %d" !next_obs obs;
         if !next_obs-1 <> obs then
           begin
-            Mutex.unlock mutex; NewSide
+            GobMutex.unlock mutex; 
+            NewSide
           end
         else
           begin
             suspend ();
-            Mutex.unlock mutex;
+            GobMutex.unlock mutex;
             Fin
           end
     end
@@ -97,6 +102,7 @@ module Base : GenericCreatingEqSolver =
     }
 
     let print_data data =
+      Logs.info "|called|=%d" (HM.length data.called);
       Logs.debug "|rho|=%d" (HM.length data.rho);
       Logs.debug "|stable|=%d" (HM.length data.stable);
       Logs.debug "|infl|=%d" (HM.length data.infl);
@@ -108,213 +114,226 @@ module Base : GenericCreatingEqSolver =
         print_data data
       )
 
-    type phase = Widen | Narrow [@@deriving show] (* used in iterate *)
-
     let solve st vs =
-
       let nr_threads = GobConfig.get_int "solvers.td3.parallel_domains" in
 
       let pool = Thread_pool.create nr_threads in
 
       let promises = ref [] in
-      let prom_mutex = Mutex.create () in
+      let prom_mutex = GobMutex.create () in
 
       let created_vars = HM.create 10 in
-      let suspended_vars = ref [] in
-      let data = create_empty_data ()
-      in
+      let suspended_vars = ref [] in (* TODO other Data structure than list? Set?*)
 
-      let infl = data.infl in
-      let rho = data.rho in
-      let wpoint = data.wpoint in
-      let stable = data.stable in
-      let called = data.called in
+      let job_id_counter = (Atomic.make 10) in
 
-      let term  = GobConfig.get_bool "solvers.td3.term" in
-      let remove_wpoint = GobConfig.get_bool "solvers.td3.remove-wpoint" in
-
-      let () = print_solver_stats := fun () ->
+      (* TODO: make something reasonable out of this
+         let () = print_solver_stats := fun () ->
           print_data data;
           Logs.info "|called|=%d" (HM.length called);
           print_context_stats rho
-      in
+         in *)
 
-      let add_infl y x =
-        if tracing then trace "sol2" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
-        HM.replace infl y (VS.add x (HM.find_default infl y VS.empty));
-      in
-
-      let init x =
-        if tracing then trace "sol2" "init %a" S.Var.pretty_trace x;
+      let init rho x =
         if not (HM.mem rho x) then (
+          if tracing then trace "init" "init %a" S.Var.pretty_trace x;
           new_var_event x;
           HM.replace rho x (S.Dom.bot ())
         )
       in
 
-      let eq x get set create =
-        if tracing then trace "sol2" "eq %a" S.Var.pretty_trace x;
-        match S.system x with
-        | None -> S.Dom.bot ()
-        | Some f -> f get set (Some create)
-      in
+      (** solves for a single point-of-interest variable (x_poi) *)
+      let rec solve_single is_primary x_poi sd =
+        let job_id = Atomic.fetch_and_add job_id_counter 1 in
+        if tracing then trace "thread_pool" "starting task (primary:%b) %d to solve for %a" is_primary job_id S.Var.pretty_trace x_poi;
 
-      let rec destabilize x =
-        if tracing then trace "sol2" "destabilize %a" S.Var.pretty_trace x;
-        let w = HM.find_default infl x VS.empty in
-        HM.replace infl x VS.empty;
-        VS.iter (fun y ->
-            if tracing then trace "sol2" "stable remove %a" S.Var.pretty_trace y;
-            HM.remove stable y;
-            if not (HM.mem called y) then destabilize y
-          ) w
-      in
+        let obs = sd.obs in
+        let stable = sd.stable in
+        let called = sd.called in
+        let infl = sd.infl in
+        let rho = sd.rho in
+        let wpoint = sd.wpoint in
 
-      let rec iterate ?reuse_eq x phase = (* ~(inner) solve in td3*)
-        let query x y = (* ~eval in td3 *)
-          let simple_solve y =
-            if tracing then trace "sol2" "simple_solve %a (rhs: %b)" S.Var.pretty_trace y (S.system y <> None);
-            if S.system y = None then (
-              init y;
-              HM.replace stable y ()
+        let add_infl y x =
+          if tracing then trace "infl" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
+          HM.replace infl y (VS.add x (HM.find_default infl y VS.empty));
+        in
+
+        let eq x get set create =
+          if tracing then trace "eq" "eq %a" S.Var.pretty_trace x;
+          match S.system x with
+          | None -> S.Dom.bot ()
+          | Some f -> f get set (Some create)
+        in
+
+        let rec destabilize outer_w =
+          VS.iter (fun y ->
+              if not (HM.mem stable y) then
+                ()
+              else if HM.mem called y then
+                HM.remove stable y
+              else (
+                let inner_w = HM.find_default infl y VS.empty in
+                HM.replace infl y VS.empty;
+                HM.remove stable y;
+                destabilize inner_w
+              )
+            ) outer_w
+        in
+
+        (** iterates to solve for x *)
+        let rec iterate orig x = (* ~(inner) solve in td3*)
+          let query x y = (* ~eval in td3 *)
+            if tracing then trace "sol_query" "%d entering query for %a; stable %b; called %b" job_id S.Var.pretty_trace y (HM.mem stable y) (HM.mem called y);
+            if HM.mem stable y || HM.mem called y then (
+              if HM.mem called y then HM.replace wpoint y ();
+              add_infl y x
             ) else (
-              HM.replace called y ();
-              iterate y Widen;
-              HM.remove called y)
+              if S.system y = None then (
+                init rho y;
+                HM.replace stable y ();
+                obs := Sides.process_updates !obs handle_side; (* For vars without constraints, we need to handle sides here *)
+              ) else (
+                HM.replace stable y ();
+                HM.replace called y ();
+                iterate (Some x) y
+              )
+            );
+            let tmp = HM.find rho y in
+            if tracing then trace "answer" "exiting query for %a\nanswer: %a" S.Var.pretty_trace y S.Dom.pretty tmp;
+            tmp
           in
-          if tracing then trace "sol2" "query %a ## %a" S.Var.pretty_trace x S.Var.pretty_trace y;
-          get_var_event y;
-          if not (HM.mem called y) then (
-            simple_solve y
-          ) else (
-            if tracing then trace "sol2" "query adding wpoint %a from %a" S.Var.pretty_trace y S.Var.pretty_trace x;
-            HM.replace wpoint y ();
-          );
-          let tmp = HM.find rho y in
-          add_infl y x;
-          if tracing then trace "sol2" "query %a ## %a -> %a" S.Var.pretty_trace x S.Var.pretty_trace y S.Dom.pretty tmp;
-          tmp
-        in
 
-        let side x y d = (* side from x to y; only to variables y w/o rhs; x only used for trace *)
-          if tracing then trace "sol2" "side to %a (wpx: %b) from %a ## value: %a" S.Var.pretty_trace y (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
-          if S.system y <> None then (
-            Logs.warn "side-effect to unknown w/ rhs: %a, contrib: %a" S.Var.pretty_trace y S.Dom.pretty d;
-          );
-          assert (S.system y = None);
-          init y;
-          let widen a b =
-            if M.tracing then M.traceli "sol2" "side widen %a %a" S.Dom.pretty a S.Dom.pretty b;
-            let r = S.Dom.widen a (S.Dom.join a b) in
-            if M.tracing then M.traceu "sol2" "-> %a" S.Dom.pretty r;
-            r
+          let side x y d = (* side from x to y; only to variables y w/o rhs; x only used for trace *)
+            if tracing then trace "side" "side to %a (wpx: %b) from %a ## value: %a" S.Var.pretty_trace y (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
+            do_side y d
           in
-          let op a b = if HM.mem wpoint y then widen a b else S.Dom.join a b
+
+          let create x y = (* create called from x on y *)
+            if tracing then trace "create" "create from td_parallel_dist was executed from %a on %a" S.Var.pretty_trace x S.Var.pretty_trace y;
+            GobMutex.lock prom_mutex;
+            if HM.mem created_vars y then
+              ()
+            else (
+              HM.replace created_vars y ();
+              let sd = create_empty_data () in
+              promises := (Thread_pool.add_work pool (fun () -> solve_single false y sd))::!promises
+            );
+            GobMutex.unlock prom_mutex
           in
-          let old = HM.find rho y in
-          let tmp = op old d in
-          if tracing then trace "sol2" "stable add %a" S.Var.pretty_trace y;
-          HM.replace stable y ();
-          if not (S.Dom.leq tmp old) then (
-            if tracing && not (S.Dom.is_bot old) then trace "solside" "side to %a (wpx: %b) from %a: %a -> %a" S.Var.pretty_trace y (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty old S.Dom.pretty tmp;
-            if tracing && not (S.Dom.is_bot old) then trace "solchange" "side to %a (wpx: %b) from %a: %a" S.Var.pretty_trace y (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty_diff (tmp, old);
-            (* HM.replace rho y ((if HM.mem wpoint y then S.Dom.widen old else identity) (S.Dom.join old d)); *)
-            HM.replace rho y tmp;
-            destabilize y;
-            (* make y a widening point. This will only matter for the next side _ y.  *)
-            if tracing then trace "sol2" "side adding wpoint %a from %a" S.Var.pretty_trace y S.Var.pretty_trace x;
-            HM.replace wpoint y ()
-          )
-        in  
 
-        let create x y = (* create called from x on y *)
-          if tracing then trace "create" "create from td_parallel_dist was executed from %a on %a" S.Var.pretty_trace x S.Var.pretty_trace y;
-          ignore (query x y)
-        in
-
-        (* begining of iterate*)
-        if tracing then trace "sol2" "iterate %a, phase: %s, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (show_phase phase) (HM.mem called x) (HM.mem stable x) (HM.mem wpoint x);
-        init x;
-        assert (S.system x <> None);
-        if not (HM.mem stable x) then (
-          if tracing then trace "sol2" "stable add %a" S.Var.pretty_trace x;
-          HM.replace stable x ();
-          (* Here we cache HM.mem wpoint x before eq. If during eq evaluation makes x wpoint, then be still don't apply widening the first time, but just overwrite.
-             It means that the first iteration at wpoint is still precise.
-             This doesn't matter during normal solving (?), because old would be bot.
-             This matters during incremental loading, when wpoints have been removed (or not marshaled) and are redetected.
-             Then the previous local wpoint value is discarded automagically and not joined/widened, providing limited restarting of local wpoints. (See query for more complete restarting.) *)
+          (* begining of iterate*)
+          if tracing then trace "sol2" "iterate %a, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (HM.mem called x) (HM.mem stable x) (HM.mem wpoint x);
+          init rho x;
+          assert (S.system x <> None);
           let wp = HM.mem wpoint x in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
-          let eqd = (* d from equation/rhs *)
-            match reuse_eq with
-            | Some d ->
-              (* Do not reset deps for reuse of eq *)
-              if tracing then trace "sol2" "eq reused %a" S.Var.pretty_trace x;
-              incr SolverStats.narrow_reuses;
-              d
-            | _ -> eq x (query x) (side x) (create x)
-          in
-          let old = HM.find rho x in (* d from older iterate *) (* find old value after eq since wpoint restarting in eq/query might have changed it meanwhile *)
+          let eqd = eq x (query x) (side x) (create x) in
+          obs := Sides.process_updates !obs handle_side;
+          let old = HM.find rho x in
           let wpd = (* d after widen/narrow (if wp) *)
             if not wp then eqd
-            else if term then
-              match phase with
-              | Widen -> S.Dom.widen old (S.Dom.join old eqd)
-              | Narrow when GobConfig.get_bool "exp.no-narrow" -> old (* no narrow *)
-              | Narrow ->
-                (* assert S.Dom.(leq eqd old || not (leq old eqd)); (* https://github.com/goblint/analyzer/pull/490#discussion_r875554284 *) *)
-                S.Dom.narrow old eqd
-            else
-              box old eqd
+            else box old eqd
           in
-          if tracing then trace "sol" "Var: %a (wp: %b)\nOld value: %a\nEqd: %a\nNew value: %a" S.Var.pretty_trace x wp S.Dom.pretty old S.Dom.pretty eqd S.Dom.pretty wpd;
-          if not (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old wpd) ()) then ( (* value changed *)
-            if tracing then trace "sol" "Changed";
-            (* if tracing && not (S.Dom.is_bot old) && HM.mem wpoint x then trace "solchange" "%a (wpx: %b): %a -> %a" S.Var.pretty_trace x (HM.mem wpoint x) S.Dom.pretty old S.Dom.pretty wpd; *)
-            if tracing && not (S.Dom.is_bot old) && HM.mem wpoint x then trace "solchange" "%a (wpx: %b): %a" S.Var.pretty_trace x (HM.mem wpoint x) S.Dom.pretty_diff (wpd, old);
-            update_var_event x old wpd;
-            HM.replace  rho x wpd;
-            destabilize x;
-            (iterate[@tailcall]) x phase
-          ) else (
-            (* TODO: why non-equal and non-stable checks in switched order compared to TD3 paper? *)
-            if not (HM.mem stable x) then ( (* value unchanged, but not stable, i.e. destabilized itself during rhs *)
-              if tracing then trace "sol2" "iterate still unstable %a" S.Var.pretty_trace x;
-              (iterate[@tailcall]) x Widen
+          if (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old wpd) ()) then (
+            (* old = wpd*)
+            if HM.mem stable x then (
+              Option.may (add_infl x) orig;
+              HM.remove called x;
+              HM.remove wpoint x
             ) else (
-              if term && phase = Widen && HM.mem wpoint x then ( (* TODO: or use wp? *)
-                if tracing then trace "sol2" "iterate switching to narrow %a" S.Var.pretty_trace x;
-                if tracing then trace "sol2" "stable remove %a" S.Var.pretty_trace x;
-                HM.remove stable x;
-                (iterate[@tailcall]) ~reuse_eq:eqd x Narrow
-              ) else if remove_wpoint && (not term || phase = Narrow) then ( (* this makes e.g. nested loops precise, ex. tests/regression/34-localization/01-nested.c - if we do not remove wpoint, the inner loop head will stay a wpoint and widen the outer loop variable. *)
-                if tracing then trace "sol2" "iterate removing wpoint %a (%b)" S.Var.pretty_trace x (HM.mem wpoint x);
-                HM.remove wpoint x
-              )
+              HM.replace stable x ();
+              (iterate[@tailcall]) orig x
+            )
+          ) else (
+            (* old != wpd*)
+            let w = HM.find_default infl x VS.empty in
+            HM.replace infl x VS.empty;
+            HM.replace rho x wpd;
+            destabilize w;
+            if HM.mem stable x then (
+              Option.may (add_infl x) orig;
+              HM.remove called x;
+            ) else (
+              HM.replace stable x ();
+              (iterate[@tailcall]) orig x
             )
           )
-        )
-      in
+        and do_side y d = 
+          let revive_suspended () =
+            GobMutex.lock prom_mutex;
+            List.iter (fun (top, z, sd) ->
+                if tracing then trace "revive" "reviving %a" S.Var.pretty_trace z;
+                promises := (Thread_pool.add_work pool (fun () -> solve_single top z sd))::!promises
+              ) !suspended_vars;
+            suspended_vars := [];
+            GobMutex.unlock prom_mutex
+          in
+          (* TODO: Does doing it in this order somehow effect the locality of sides? *)
+          Sides.add_side revive_suspended (y, d)
+        and handle_side (y, v) =
+          init rho y; (* necessary? *)
+          let old_v = HM.find rho y in
+          if S.Dom.leq v old_v then 
+            ()
+          else (
+            let new_v = S.Dom.widen old_v (S.Dom.join old_v v) in
+            if tracing then trace "side" "set side %a value: %a" S.Var.pretty_trace y S.Dom.pretty (S.Dom.widen v (S.Dom.join v old_v));
+            HM.replace rho y (S.Dom.widen v (S.Dom.join v old_v));
+            do_side y new_v;
+            HM.replace stable y ();
+            let w = HM.find_default infl y VS.empty in
+            HM.replace infl y VS.empty;
+            destabilize w
+          )
+        in
 
-      let set_start (x,d) =
-        if tracing then trace "sol2" "set_start %a ## %a" S.Var.pretty_trace x S.Dom.pretty d;
-        init x;
-        HM.replace rho x d;
-        HM.replace stable x ();
-        (* iterate x Widen *)
+        (* begining of solve_single *)
+        HM.replace stable x_poi ();
+        HM.replace called x_poi ();
+        iterate None x_poi;
+        let suspend () =
+          GobMutex.lock prom_mutex;
+          if tracing then trace "suspend" "suspending %a" S.Var.pretty_trace x_poi;
+          suspended_vars := (is_primary, x_poi, sd)::!suspended_vars;
+          GobMutex.unlock prom_mutex
+        in
+        let rec wait () =
+          match Sides.updates_or_fin suspend !obs with
+          | Sides.NewSide -> (
+              obs := Sides.process_updates !obs handle_side;
+              if HM.mem stable x_poi then
+                wait ()
+              else
+                HM.replace stable x_poi ();
+              HM.replace called x_poi ();
+              iterate None x_poi;
+              wait ()
+            ) 
+          | Sides.Fin -> ()
+        in
+        wait ()
       in
 
       (* Imperative part starts here*)
+      let init_data = create_empty_data () in
+
+      let set_start (x,d) =
+        if tracing then trace "sol2" "set_start %a ## %a" S.Var.pretty_trace x S.Dom.pretty d;
+        init init_data.rho x;
+        HM.replace init_data.rho x d;
+        HM.replace init_data.stable x ();
+      in
+
       start_event ();
 
       List.iter set_start st;
 
-      List.iter init vs;
+      List.iter (init init_data.rho) vs;
       (* If we have multiple start variables vs, we might solve v1, then while solving v2 we side some global which v1 depends on with a new value. Then v1 is no longer stable and we have to solve it again. *)
       let i = ref 0 in
       let rec solver () = (* as while loop in paper *)
         incr i;
-        let unstable_vs = List.filter (neg (HM.mem stable)) vs in
+        let unstable_vs = List.filter (neg (HM.mem init_data.stable)) vs in
         if unstable_vs <> [] then (
           if Logs.Level.should_log Debug then (
             if !i = 1 then Logs.newline ();
@@ -323,30 +342,50 @@ module Base : GenericCreatingEqSolver =
             Logs.newline ();
             flush_all ();
           );
-          List.iter (fun x -> HM.replace called x (); iterate x Widen; HM.remove called x) unstable_vs;
+          List.iter (fun x ->
+              if tracing then trace "multivar" "solving for %a" S.Var.pretty_trace x;
+              Domainslib.Task.run pool (fun () -> 
+                  solve_single true x init_data; 
+                  Thread_pool.await_all pool (!promises)
+                )
+            ) unstable_vs;
           solver ();
         )
       in
       solver ();
+      Thread_pool.finished_with pool;
       (* Before we solved all unstable vars in rho with a rhs in a loop. This is unneeded overhead since it also solved unreachable vars (reachability only removes those from rho further down). *)
       (* After termination, only those variables are stable which are
        * - reachable from any of the queried variables vs, or
        * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)
 
       stop_event ();
-      print_data_verbose data "Data after iterate completed";
+      (*print_data_verbose data "Data after iterate completed";
 
-      if GobConfig.get_bool "dbg.print_wpoints" then (
+        if GobConfig.get_bool "dbg.print_wpoints" then (
         Logs.newline ();
         Logs.debug "Widening points:";
         HM.iter (fun k () -> Logs.debug "%a" S.Var.pretty_trace k) wpoint;
         Logs.newline ();
-      );
+        );
 
 
-      print_data_verbose data "Data after postsolve";
+        print_data_verbose data "Data after postsolve";*)
 
-      rho
+      (* TODO: make a better merge here*)
+      let final_rho = List.fold (fun acc (_,_,sd) -> 
+          HM.merge (
+            fun k ao bo -> 
+              match ao, bo with
+              | None, None -> None
+              | Some a, None -> ao
+              | None, Some b -> bo
+              | Some a, Some b -> if S.Dom.equal a b then ao 
+                else (if tracing then trace "dbg_para" "Inconsistent data for %a:\n left: %a\n right: %a" S.Var.pretty_trace k S.Dom.pretty a S.Dom.pretty b; Some (S.Dom.join a b)) 
+          ) acc sd.rho
+        ) (HM.create 10) !suspended_vars in
+      if tracing then trace "dbg_para" "final_rho len: %d" (HM.length final_rho);
+      final_rho
   end
 
 let () =
