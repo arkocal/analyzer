@@ -24,6 +24,7 @@ module Base : GenericEqSolver =
     include Generic.SolverStats (S) (HM)
     module VS = Set.Make (S.Var)
     module LHM = LockableHashtbl (S.Var) (HM)
+    module IntMap = Map.Make (Int)
 
     type solver_data = {
       infl: VS.t LHM.t;
@@ -38,6 +39,9 @@ module Base : GenericEqSolver =
       wpoint = LHM.create 10;
       stable = LHM.create 10;
     }
+
+    let iter_cnt_var = HM.create 10
+    let total_iter_count = ref 0
 
     let print_data data =
       Logs.debug "|rho|=%d" (LHM.length data.rho);
@@ -163,6 +167,8 @@ module Base : GenericEqSolver =
 
         (* begining of iterate*)
         if tracing then trace "iter" "iterate %a, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (LHM.mem called x) (LHM.mem stable x) (LHM.mem wpoint x);
+        HM.replace iter_cnt_var x (1 + HM.find_default iter_cnt_var x 0);
+        total_iter_count := !total_iter_count + 1;
         init x;
         assert (S.system x <> None);
         if not (LHM.mem stable x) then (
@@ -285,8 +291,18 @@ module Base : GenericEqSolver =
 
       print_data_verbose data "Data after postsolve";
 
+      let total_iter = HM.fold (fun k v acc -> v + acc) iter_cnt_var 0 in
+      if tracing then trace "count" "Total iterations: %d" total_iter;
+      if tracing then trace "count" "Total iterations by ref: %d" !total_iter_count;
+      (* HM.iter (fun k v -> if tracing then trace "count" "%a: %d iterations" S.Var.pretty_trace k v) iter_cnt_var; *)
+
+      (* Count how often we iterated *)
+      let cmap = HM.fold (fun unknown iter_count acc -> IntMap.add iter_count 
+        ((IntMap.find_default 0 iter_count acc)+1) acc) iter_cnt_var IntMap.empty in
+
+      IntMap.iter (fun k v -> if tracing then trace "count" "%d iterations: %d times" k v) cmap;
       LHM.to_hashtbl rho
-  end
+end
 
 let () =
   Selector.add_solver ("td_simplified", (module PostSolver.EqIncrSolverFromEqSolver (Base)));

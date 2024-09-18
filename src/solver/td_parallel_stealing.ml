@@ -22,348 +22,443 @@ let map_size = 1000
 module M = Messages
 
 module Base : GenericEqSolver =
-  functor (S:EqConstrSys) ->
-  functor (HM:Hashtbl.S with type key = S.v) ->
+functor (S:EqConstrSys) ->
+functor (HM:Hashtbl.S with type key = S.v) ->
+struct
+  open SolverBox.Warrow (S.Dom)
+  include Generic.SolverStats (S) (HM)
+  module VS = Set.Make (S.Var)
+  module LHM = LockableHashtbl (S.Var) (HM)
+  module Int_tbl = Hashtbl.Make (
   struct
-    open SolverBox.Warrow (S.Dom)
-    include Generic.SolverStats (S) (HM)
-    module VS = Set.Make (S.Var)
-    module LHM = LockableHashtbl (S.Var) (HM)
-    module Int_tbl = Hashtbl.Make (
-      struct
-        type t = int
-        let equal = (=)
-        let hash = Hashtbl.hash
-      end
-    )
-    module PLHM = LockableHashtbl (
-      struct
-        type t = int
-        let equal = (=)
-        let hash = Hashtbl.hash
-      end
+    type t = int
+    let equal = (=)
+    let hash = Hashtbl.hash
+  end
+  )
+  module PLHM = LockableHashtbl (
+  struct
+    type t = int
+    let equal = (=)
+    let hash = Hashtbl.hash
+  end
   ) (Int_tbl)
 
-    (* data of *)
-    type solver_data = {
-      rho: S.Dom.t LHM.t;
-      called: int LHM.t;
-      stable: int LHM.t;
+  (* data of *)
+  type solver_data = {
+    rho: S.Dom.t LHM.t;
+    called: int LHM.t;
+    stable: int LHM.t;
+    stolen: unit LHM.t;
+  }
+
+  type thread_data = {
+    wpoint: unit HM.t;
+    infl: VS.t HM.t;
+  } 
+
+
+  let create_empty_solver_data () = {
+    rho = LHM.create map_size;
+    called = LHM.create map_size;
+    stable = LHM.create map_size;
+    stolen = LHM.create map_size;
+  }
+
+  let create_empty_thread_data () = 
+    {
+      wpoint = HM.create 10;
+      infl = HM.create 10;
     }
 
-    type thread_data = {
-      wpoint: unit HM.t;
-      infl: VS.t HM.t;
-    } 
 
-    let create_empty_solver_data () = {
-      rho = LHM.create map_size;
-      called = LHM.create map_size;
-      stable = LHM.create map_size;
-    }
+  let print_data data =
+    Logs.debug "|rho|=%d" (LHM.length data.rho);
+    Logs.debug "|called|=%d" (LHM.length data.called);
+    Logs.debug "|stable|=%d" (LHM.length data.stable)
 
-    let create_empty_thread_data () = 
-      {
-        wpoint = HM.create 10;
-        infl = HM.create 10;
-      }
+  let print_data_verbose data str =
+    if Logs.Level.should_log Debug then (
+      Logs.debug "%s:" str;
+      print_data data
+    )
 
+  let print_iteration_counts counter =
+    PLHM.iter (fun k v -> Logs.info "Thread %d: %d times" k v) counter
 
-    let print_data data =
-      Logs.debug "|rho|=%d" (LHM.length data.rho);
-      Logs.debug "|called|=%d" (LHM.length data.called);
-      Logs.debug "|stable|=%d" (LHM.length data.stable)
+  let solve st vs =
 
-    let print_data_verbose data str =
-      if Logs.Level.should_log Debug then (
-        Logs.debug "%s:" str;
-        print_data data
+    let nr_threads = GobConfig.get_int "solvers.td3.parallel_domains" in
+    let lower_in_search_phase = ref true in
+
+    let data = create_empty_solver_data ()
+    in
+
+    let iterate_counter = PLHM.create 10 in
+
+    let rho = data.rho in
+    let stable = data.stable in
+    let called = data.called in
+    let stolen = data.stolen in
+    let main_finished = ref false in
+
+    let () = print_solver_stats := fun () ->
+      Logs.info "Lower in search phase: %b" !lower_in_search_phase;
+      print_iteration_counts iterate_counter;
+      print_data data;
+      print_context_stats @@ LHM.to_hashtbl rho
+    in
+
+    let init x =
+      if not (LHM.mem rho x) then (
+        new_var_event x;
+        if tracing then trace "init" "initializing %a(%d)" S.Var.pretty_trace x (S.Var.hash x);
+        LHM.replace rho x (S.Dom.bot ())
       )
+    in
 
-    let solve st vs =
+    let eq x (get : S.v -> S.d) set =
+      match S.system x with
+      | None -> S.Dom.bot ()
+      | Some f -> f get set
+    in
 
-      let nr_threads = GobConfig.get_int "solvers.td3.parallel_domains" in
+    let rec solve_thread x thread_id =
+      let () = if (PLHM.mem iterate_counter thread_id) then () else (PLHM.replace iterate_counter thread_id 0) in
+      (* init thread local data *)
+      let t_data = create_empty_thread_data ()
+      in
+      let wpoint = t_data.wpoint in
+      let infl = t_data.infl in
+      let prio = (lowest_prio - thread_id - 1) in
 
-      let data = create_empty_solver_data ()
+      (* returns the current called/stable prio value of x. returns lowest_prio if not present *)
+      let stable_prio x = LHM.find_default stable x lowest_prio in
+      let called_prio x = LHM.find_default called x lowest_prio in
+
+      let add_infl y x =
+        if tracing then trace "infl" "%d add_infl %a %a" prio S.Var.pretty_trace y S.Var.pretty_trace x;
+        HM.replace infl y (VS.add x (HM.find_default infl y VS.empty));
       in
 
-      let iterate_counter = PLHM.create 10 in
-
-      let rho = data.rho in
-      let stable = data.stable in
-      let called = data.called in
-
-      let () = print_solver_stats := fun () ->
-          print_data data;
-          print_context_stats @@ LHM.to_hashtbl rho
+      let rec destabilize ~all x =
+        let w = HM.find_default infl x VS.empty in
+        HM.replace infl x VS.empty;
+        VS.iter (fun y ->
+          if tracing then trace "lock" "%d locking %a in destab" prio S.Var.pretty_trace y;
+          LHM.lock y rho;
+          if (all || (prio <= stable_prio y)) && (stable_prio y <> lowest_prio) then (
+            if tracing then trace "destab" "%d destabilizing %a from %d" prio S.Var.pretty_trace y (stable_prio y);
+            LHM.replace stable y lowest_prio
+          );
+          if tracing then trace "lock" "%d unlocking %a in destab" prio S.Var.pretty_trace y;
+          LHM.unlock y rho;
+          destabilize ~all y
+        ) w
       in
 
-      let init x =
-        if not (LHM.mem rho x) then (
-          new_var_event x;
-          if tracing then trace "init" "initializing %a(%d)" S.Var.pretty_trace x (S.Var.hash x);
-          LHM.replace rho x (S.Dom.bot ())
-        )
-      in
-
-      let eq x get set =
-        match S.system x with
-        | None -> S.Dom.bot ()
-        | Some f -> f get set
-      in
-
-      let solve_thread x thread_id =
-        let () = PLHM.replace iterate_counter thread_id 0 in
-        (* init thread local data *)
-        let t_data = create_empty_thread_data ()
-        in
-        let wpoint = t_data.wpoint in
-        let infl = t_data.infl in
-        let prio = (lowest_prio - thread_id - 1) in
-
-        (* returns the current called/stable prio value of x. returns lowest_prio if not present *)
-        let stable_prio x = LHM.find_default stable x lowest_prio in
-        let called_prio x = LHM.find_default called x lowest_prio in
-
-        let add_infl y x =
-          if tracing then trace "infl" "%d add_infl %a %a" prio S.Var.pretty_trace y S.Var.pretty_trace x;
-          HM.replace infl y (VS.add x (HM.find_default infl y VS.empty));
-        in
-
-        let rec destabilize ~all x =
-          let w = HM.find_default infl x VS.empty in
-          HM.replace infl x VS.empty;
-          VS.iter (fun y ->
-              if tracing then trace "lock" "%d locking %a in destab" prio S.Var.pretty_trace y;
-              LHM.lock y rho;
-              if (all || (prio <= stable_prio y)) && (stable_prio y <> lowest_prio) then (
-                if tracing then trace "destab" "%d destabilizing %a from %d" prio S.Var.pretty_trace y (stable_prio y);
-                LHM.replace stable y lowest_prio
-              );
-              if tracing then trace "lock" "%d unlocking %a in destab" prio S.Var.pretty_trace y;
-              LHM.unlock y rho;
-              destabilize ~all y
-            ) w
-        in
-
-        let rec iterate x = (* ~(inner) solve in td3*)
-          let query x y = (* ~eval in td3 *)
-            if tracing then trace "sol_query" "%d entering query with prio %d for %a" prio (called_prio y) S.Var.pretty_trace y;
-            if tracing then trace "lock" "%d locking %a in query" prio S.Var.pretty_trace y;
-            LHM.lock y rho;
-            get_var_event y;
-            if not (called_prio y <= prio) then (
-              (* TODO (see td-parallel repo): check if necessary/enough *)
-              (* If owning new, make sure it is not in point *)
-              if tracing && (HM.mem wpoint y) then trace "wpoint" "%d query removing wpoint %a" prio S.Var.pretty_trace y;
-              if HM.mem wpoint y then HM.remove wpoint y;
-              init y;
-              if S.system y = None then (
-                if tracing then trace "stable" "%d query setting %a stable from %d" prio S.Var.pretty_trace y (stable_prio y);
-                LHM.replace stable y prio
-              ) else (
-                if tracing then trace "called" "%d query setting prio from %d to %d for %a" prio (called_prio y) prio S.Var.pretty_trace y;
-                if tracing then trace "own" "%d taking ownership of %a." prio S.Var.pretty_trace y;
-                if tracing && ((called_prio y) != lowest_prio) then trace "steal" "%d stealing %a from %d" prio S.Var.pretty_trace y (called_prio y);
-                LHM.replace called y prio;
-                if tracing then trace "lock" "%d unlocking %a in query" prio S.Var.pretty_trace y;
-                LHM.unlock y rho;
-                (* call iterate unlocked *)
-                if tracing then trace "iter" "%d iterate called from query" prio;
-                iterate y;
-                if tracing then trace "lock" "%d locking %a in query 2" prio S.Var.pretty_trace y;
-                LHM.lock y rho;
-                if (called_prio y >= prio) then (
-                  if tracing then trace "own" "%d giving up ownership of %a." prio S.Var.pretty_trace y;
-                  if tracing then trace "called" "%d query setting prio back from %d to %d for %a" prio (called_prio y) lowest_prio S.Var.pretty_trace y;
-                  LHM.replace called y lowest_prio
-                )
-              )
-            ) else (
-              if tracing && not (HM.mem wpoint y) then trace "wpoint" "%d query adding wpoint %a from %a" prio S.Var.pretty_trace y S.Var.pretty_trace x;
-              HM.replace wpoint y ()
-            );
-            let tmp = LHM.find rho y in
-            if tracing then trace "lock" "%d unlocking %a in query 2" prio S.Var.pretty_trace y;
-            LHM.unlock y rho;
-            add_infl y x;
-            if tracing then trace "sol_query" "%d exiting query for %a" prio S.Var.pretty_trace y;
-            tmp
+      let rec find_work (worklist: S.v list) (seen: VS.t) = 
+        let not_global v = S.system v <> None in
+        match worklist with
+        | [] -> None
+        | x :: xs -> 
+        if tracing then trace "search" "%d searching for work %a" prio S.Var.pretty_trace x;
+        if (not_global x && prio < called_prio x && prio < stable_prio x) then (
+            if tracing then trace "work" "%d found work %a" prio S.Var.pretty_trace x;
+            Some x
+          )
+        else (
+          let new_work = ref [] in
+          let query (y: S.v): S.d =
+              new_work := y :: !new_work;
+              LHM.find_default rho y (S.Dom.bot ())
           in
+          let side _ _ = () in
+          ignore @@ eq x query side;
+          (* VS.add_seq (Seq.of_list !new_work) seen; *)
+          new_work := List.filter (fun y -> not (VS.mem y seen)) !new_work;
+          let candidate = List.find_opt (fun z ->
+            not_global z && prio <= called_prio z && prio < stable_prio z) !new_work in
+          match candidate with
+            | Some y -> (
+              Some y
+            )
+            | None -> find_work (xs @ !new_work ) (VS.add_seq (Seq.of_list !new_work) seen)
+          )
+      in
 
-          let side x y d = (* side from x to y; only to variables y w/o rhs; x only used for trace *)
-            if tracing then trace "side" "%d side to %a(%d) (wpx: %b) from %a ## value: %a" prio S.Var.pretty_trace y (S.Var.hash y) (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
-            if S.system y <> None then (
-              Logs.warn "side-effect to unknown w/ rhs: %a, contrib: %a" S.Var.pretty_trace y S.Dom.pretty d;
-            );
-            assert (S.system y = None);
-            if tracing then trace "lock" "%d locking %a in side" prio S.Var.pretty_trace y;
-            LHM.lock y rho;
+      let rec iterate (x : S.v) = (* ~(inner) solve in td3*)
+
+        let query x y = (* ~eval in td3 *)
+          if tracing then trace "sol_query" "%d entering query with prio %d for %a" prio (called_prio y) S.Var.pretty_trace y;
+          if tracing then trace "lock" "%d locking %a in query" prio S.Var.pretty_trace y;
+          LHM.lock y rho;
+          get_var_event y;
+          if (prio < called_prio y) then ( (* Priority high enough: Take over the variable and iterate *)
+
+            (* TODO (see td-parallel repo): check if necessary/enough *)
+            (* If owning new, make sure it is not in point *)
+            if tracing && (HM.mem wpoint y) then trace "wpoint" "%d query removing wpoint %a" prio S.Var.pretty_trace y;
+            if HM.mem wpoint y then HM.remove wpoint y;
             init y;
-
-            (* begining of side *)
-            (* TODO check if this works *)
-            if (called_prio y >= prio) then (
-              if tracing then trace "called" "%d side setting prio from %d to %d for %a" prio (called_prio y) prio S.Var.pretty_trace y;
-              if tracing then trace "ownSide" "%d side taking ownership of %a. Previously owned by %d" prio S.Var.pretty_trace y (called_prio y);
-              LHM.replace called y prio;
-              let old = LHM.find rho y in
-              (* currently any side-effect after the first one will be widened *)
-              let widen a b = 
-                if M.tracing then M.trace "sidew" "%d side widen %a" prio S.Var.pretty_trace y;
-                S.Dom.widen a (S.Dom.join a b)    
-              in 
-              let tmp = if HM.mem wpoint y then widen old d else S.Dom.join old d in
-              if tracing then trace "lock" "%d unlocking %a in side" prio S.Var.pretty_trace y;
-              if not (S.Dom.leq tmp old) then (
-                if tracing then trace "updateSide" "%d side setting %a(%d) to %a" prio S.Var.pretty_trace y (S.Var.hash y) S.Dom.pretty tmp;
-                LHM.replace rho y tmp;
-                LHM.unlock y rho;
-                if tracing then trace "destab" "%d destabilize called from side to %a" prio S.Var.pretty_trace y;
-                destabilize ~all:true y;
-                if tracing && not (HM.mem wpoint y) then trace "wpoint" "%d side adding wpoint %a from %a" prio S.Var.pretty_trace y S.Var.pretty_trace x;
-                HM.replace wpoint y ()
-              ) else (
-                LHM.unlock y rho
-              )
+            if S.system y = None then (
+              if tracing then trace "stable" "%d query setting %a stable from %d" prio S.Var.pretty_trace y (stable_prio y);
+              LHM.replace stable y prio
             ) else (
-              if tracing then trace "lock" "%d unlocking %a in side" prio S.Var.pretty_trace y;
+              if tracing then trace "called" "%d query setting prio from %d to %d for %a" prio (called_prio y) prio S.Var.pretty_trace y;
+              if tracing then trace "own" "%d taking ownership of %a." prio S.Var.pretty_trace y;
+              (* if tracing && ((called_prio y) != lowest_prio) then trace "steal" "%d stealing %a from %d" prio S.Var.pretty_trace y (called_prio y); *)
+              if (called_prio y != lowest_prio) then (
+                if tracing then trace "steal" "steal from: %d %a" (called_prio y) S.Var.pretty_trace y;
+                LHM.replace stolen y ()
+              );
+              LHM.replace called y prio;
+              if tracing then trace "lock" "%d unlocking %a in query" prio S.Var.pretty_trace y;
+              LHM.unlock y rho;
+              (* call iterate unlocked *)
+              if tracing then trace "iter" "%d iterate called from query" prio;
+              iterate y;
+              if tracing then trace "lock" "%d locking %a in query 2" prio S.Var.pretty_trace y;
+              LHM.lock y rho;
+              if (called_prio y >= prio) then ( (* if still owning *)
+                if tracing then trace "own" "%d giving up ownership of %a." prio S.Var.pretty_trace y;
+                if tracing then trace "called" "%d query setting prio back from %d to %d for %a" prio (called_prio y) lowest_prio S.Var.pretty_trace y;
+                LHM.replace called y lowest_prio;
+                (* if tracing then trace "steal" "removing %a from stolen" S.Var.pretty_trace y; *)
+                LHM.remove stolen y
+              )
+            )
+          ) else (
+            if tracing && not (HM.mem wpoint y) then trace "wpoint" "%d query adding wpoint %a from %a" prio S.Var.pretty_trace y S.Var.pretty_trace x;
+            HM.replace wpoint y () (* is this correct, we could also just be skipping due to low prio *)
+            (* since wpoint is thread local it should be fine either way *)
+          );
+          let tmp = LHM.find rho y in
+          if tracing then trace "lock" "%d unlocking %a in query 2" prio S.Var.pretty_trace y;
+          LHM.unlock y rho;
+          add_infl y x;
+          if tracing then trace "sol_query" "%d exiting query for %a" prio S.Var.pretty_trace y;
+          tmp
+        in
+
+        let side x y d = (* side from x to y; only to variables y w/o rhs; x only used for trace *)
+          if tracing then trace "side" "%d side to %a(%d) (wpx: %b) from %a ## value: %a" prio S.Var.pretty_trace y (S.Var.hash y) (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
+          if S.system y <> None then (
+            Logs.warn "side-effect to unknown w/ rhs: %a, contrib: %a" S.Var.pretty_trace y S.Dom.pretty d;
+          );
+          assert (S.system y = None);
+          if tracing then trace "lock" "%d locking %a in side" prio S.Var.pretty_trace y;
+          LHM.lock y rho;
+          init y;
+
+          (* begining of side *)
+          (* TODO check if this works *)
+          if (called_prio y >= prio) then (
+            if tracing then trace "called" "%d side setting prio from %d to %d for %a" prio (called_prio y) prio S.Var.pretty_trace y;
+            if tracing then trace "ownSide" "%d side taking ownership of %a. Previously owned by %d" prio S.Var.pretty_trace y (called_prio y);
+            LHM.replace called y prio;
+            let old = LHM.find rho y in
+            (* currently any side-effect after the first one will be widened *)
+            let widen a b = 
+              if M.tracing then M.trace "sidew" "%d side widen %a" prio S.Var.pretty_trace y;
+              S.Dom.widen a (S.Dom.join a b)    
+            in 
+            let tmp = if HM.mem wpoint y then widen old d else S.Dom.join old d in
+            if tracing then trace "lock" "%d unlocking %a in side" prio S.Var.pretty_trace y;
+            if not (S.Dom.leq tmp old) then (
+              if tracing then trace "updateSide" "%d side setting %a(%d) to %a" prio S.Var.pretty_trace y (S.Var.hash y) S.Dom.pretty tmp;
+              LHM.replace rho y tmp;
+              LHM.unlock y rho;
+              if tracing then trace "destab" "%d destabilize called from side to %a" prio S.Var.pretty_trace y;
+              destabilize ~all:true y;
+              if tracing && not (HM.mem wpoint y) then trace "wpoint" "%d side adding wpoint %a from %a" prio S.Var.pretty_trace y S.Var.pretty_trace x;
+              HM.replace wpoint y ()
+            ) else (
               LHM.unlock y rho
             )
-          in
+          ) else (
+            if tracing then trace "lock" "%d unlocking %a in side" prio S.Var.pretty_trace y;
+            LHM.unlock y rho
+          )
+        in
 
 
-          (* begining of iterate *)
-          let () = PLHM.replace iterate_counter thread_id (PLHM.find iterate_counter thread_id + 1) in
+        (* begining of iterate *)
+        let () = PLHM.replace iterate_counter thread_id (PLHM.find iterate_counter thread_id + 1) in
         if tracing then trace "prio" "%d %d" prio (PLHM.find iterate_counter thread_id);
-          if tracing then trace "lock" "%d locking %a in iterate" prio S.Var.pretty_trace x;
-          LHM.lock x rho;
-          init x;
-          if tracing then trace "iter" "%d iterate %a, called: %b, stable: %b, wpoint: %b" prio S.Var.pretty_trace x (called_prio x <= prio) (stable_prio x <= prio) (HM.mem wpoint x);
-          assert (S.system x <> None);
-          if not (stable_prio x <= prio) then (
-            if tracing then trace "stable" "%d iterate setting %a stable from %d" prio S.Var.pretty_trace x (stable_prio x);
-            LHM.replace stable x prio;
-            (* Here we cache LHM.mem wpoint x before eq. If during eq evaluation makes x wpoint, then be still don't apply widening the first time, but just overwrite.
+        if tracing then trace "lock" "%d locking %a in iterate" prio S.Var.pretty_trace x;
+        LHM.lock x rho;
+        init x;
+        if tracing then trace "iter" "%d iterate %a, called: %b, stable: %b, wpoint: %b" prio S.Var.pretty_trace x (called_prio x <= prio) (stable_prio x <= prio) (HM.mem wpoint x);
+        assert (S.system x <> None);
+        if not (stable_prio x <= prio) then (
+          if tracing then trace "stable" "%d iterate setting %a stable from %d" prio S.Var.pretty_trace x (stable_prio x);
+          LHM.replace stable x prio;
+          (* Here we cache LHM.mem wpoint x before eq. If during eq evaluation makes x wpoint, then be still don't apply widening the first time, but just overwrite.
                It means that the first iteration at wpoint is still precise.
                This doesn't matter during normal solving (?), because old would be bot.
                This matters during incremental loading, when wpoints have been removed (or not marshaled) and are redetected.
                Then the previous local wpoint value is discarded automagically and not joined/widened, providing limited restarting of local wpoints. (See query for more complete restarting.) *)
-            let wp = HM.mem wpoint x in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
-            if tracing then trace "lock" "%d unlocking %a in iterate" prio S.Var.pretty_trace x;
-            LHM.unlock x rho;
-            if tracing then trace "eq" "%d eval eq for %a" prio S.Var.pretty_trace x;
-            let eqd = eq x (query x) (side x) in
-            if tracing then trace "lock" "%d locking %a in iterate 2" prio S.Var.pretty_trace x;
-            LHM.lock x rho;
-            let old = LHM.find rho x in (* d from older iterate *) (* find old value after eq since wpoint restarting in eq/query might have changed it meanwhile *)
-            let wpd = (* d after box operator (if wp) *)
-              if not wp then 
-                eqd
-              else (if tracing then trace "wpoint" "%d box widening %a" prio S.Var.pretty_trace x; box old eqd)
-            in
-            if tracing then trace "sol" "%d Var: %a (wp: %b)\nOld value: %a\nEqd: %a\nNew value: %a" prio S.Var.pretty_trace x wp S.Dom.pretty old S.Dom.pretty eqd S.Dom.pretty wpd;
-            if not (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old wpd) ()) then ( 
-              (* old != wpd *)
-              if (stable_prio x >= prio && called_prio x >= prio) then (
-                if tracing then trace "sol" "%d Changed" prio;
-                update_var_event x old wpd;
-                if tracing then trace "update" "%d setting %a to %a" prio S.Var.pretty_trace x S.Dom.pretty wpd;
-                LHM.replace rho x wpd;
-                if tracing then trace "lock" "%d unlocking %a in iterate 2" prio S.Var.pretty_trace x;
-                LHM.unlock x rho;
-                if tracing then trace "destab" "%d destabilize called from iterate of %a" prio S.Var.pretty_trace x;
-                destabilize ~all:false x;
-                if tracing then trace "iter" "%d iterate changed" prio;
-                (iterate[@tailcall]) x
-              ) else (
-                LHM.unlock x rho
-              )
+          let wp = HM.mem wpoint x in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
+          if tracing then trace "lock" "%d unlocking %a in iterate" prio S.Var.pretty_trace x;
+          LHM.unlock x rho;
+          if tracing then trace "eq" "%d eval eq for %a" prio S.Var.pretty_trace x;
+          let eqd = eq x (query x) (side x) in
+          if tracing then trace "lock" "%d locking %a in iterate 2" prio S.Var.pretty_trace x;
+          LHM.lock x rho;
+          let old = LHM.find rho x in (* d from older iterate *) (* find old value after eq since wpoint restarting in eq/query might have changed it meanwhile *)
+          let wpd = (* d after box operator (if wp) *)
+            if not wp then 
+              eqd
+            else (if tracing then trace "wpoint" "%d box widening %a" prio S.Var.pretty_trace x; box old eqd)
+          in
+          if tracing then trace "sol" "%d Var: %a (wp: %b)\nOld value: %a\nEqd: %a\nNew value: %a" prio S.Var.pretty_trace x wp S.Dom.pretty old S.Dom.pretty eqd S.Dom.pretty wpd;
+          if not (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old wpd) ()) then ( 
+            (* old != wpd *)
+            if (stable_prio x >= prio && called_prio x >= prio) then (
+              if tracing then trace "sol" "%d Changed" prio;
+              update_var_event x old wpd;
+              if tracing then trace "update" "%d setting %a to %a" prio S.Var.pretty_trace x S.Dom.pretty wpd;
+              LHM.replace rho x wpd;
+              if tracing then trace "lock" "%d unlocking %a in iterate 2" prio S.Var.pretty_trace x;
+              LHM.unlock x rho;
+              if tracing then trace "destab" "%d destabilize called from iterate of %a" prio S.Var.pretty_trace x;
+              destabilize ~all:false x;
+              if tracing then trace "iter" "%d iterate changed" prio;
+              (*   (* STEAL REVIVAL HERE *) *)
+              (*   if (LHM.mem stolen x && HM.mem wpoint x && revival_on ) then ( *)
+              (*     if tracing then trace "steal" "%d revived at %a" (prio+1) S.Var.pretty_trace x; *)
+              (*     LHM.remove stolen x; *)
+              (*     (* TODO sparing locks for now - two threads, other is dead *) *)
+              (*     LHM.replace called x (prio + 1); *)
+              (*     (* TODO sleep here is just experimental *) *)
+              (*     ignore @@ Domain.spawn (fun () -> solve_thread x (thread_id-1)); *)
+              (*     Unix.sleepf 0.01; *)
+              (* ); *)
+
+              (iterate[@tailcall]) x
             ) else (
-              (* old = wpd*)
-              if not (stable_prio x <= prio) then (
-                if tracing then trace "iter" "%d iterate still unstable" prio;
-                LHM.unlock x rho;
-                (iterate[@tailcall]) x
-              ) else (
-                if tracing && (HM.mem wpoint x) then trace "wpoint" "%d iterate removing wpoint %a" prio S.Var.pretty_trace x;
-                HM.remove wpoint x;
-                if tracing then trace "lock" "%d unlocking %a in iterate 2" prio S.Var.pretty_trace x;
-                LHM.unlock x rho
-              )
+              LHM.unlock x rho
             )
           ) else (
-            if tracing then trace "lock" "%d unlocking %a in iterate" prio S.Var.pretty_trace x;
-            LHM.unlock x rho;
+            (* old = wpd*)
+            if not (stable_prio x <= prio) then (
+              if tracing then trace "iter" "%d iterate still unstable" prio;
+              LHM.unlock x rho;
+              (iterate[@tailcall]) x
+            ) else (
+              if tracing && (HM.mem wpoint x) then trace "wpoint" "%d iterate removing wpoint %a" prio S.Var.pretty_trace x;
+              HM.remove wpoint x;
+              if tracing then trace "lock" "%d unlocking %a in iterate 2" prio S.Var.pretty_trace x;
+              LHM.unlock x rho
+            )
           )
-        in
-        iterate x;
-      in
-
-      let set_start (x,d) =
-        init x;
-        LHM.replace rho x d;
-        LHM.replace stable x highest_prio;
-        (* iterate x Widen *)
-      in
-
-      let start_threads x =
-        let threads = Array.init nr_threads (fun j ->
-            Domain.spawn (fun () -> 
-                if Logs.Level.should_log Debug then Printexc.record_backtrace true;
-                Unix.sleepf (Float.mul (float j) 0.25);
-                try
-                  if tracing then trace "start" "%d started" j;
-                  solve_thread x j
-                with 
-                  e -> Printexc.print_backtrace stderr;
-                  raise e
-              )) in 
-      Array.iter Domain.join threads;
-      if tracing then (PLHM.iter (fun k v -> trace "cpri" "Thread %d iterated %d times" k v) iterate_counter)
-      in
-
-      (* Imperative part starts here*)
-      start_event ();
-
-      List.iter set_start st;
-
-      List.iter init vs;
-      (* If we have multiple start variables vs, we might solve v1, then while solving v2 we side some global which v1 depends on with a new value. Then v1 is no longer stable and we have to solve it again. *)
-      let i = ref 0 in
-      let rec solver () = (* as while loop in paper *)
-        incr i;
-        let unstable_vs = List.filter (neg (fun x -> LHM.find_default stable x lowest_prio < lowest_prio)) vs in
-        if unstable_vs <> [] then (
-          if Logs.Level.should_log Debug then (
-            if !i = 1 then Logs.newline ();
-            Logs.debug "Unstable solver start vars in %d. phase:" !i;
-            List.iter (fun v -> Logs.debug "\t%a" S.Var.pretty_trace v) unstable_vs;
-            Logs.newline ();
-            flush_all ();
-          );
-          List.iter (fun x -> (*LHM.replace called x highest_prio;*)
-              if tracing then trace "multivar" "solving for %a" S.Var.pretty_trace x;
-              start_threads x;
-              if tracing then (
-                trace "multivar" "current mapping:";
-                LHM.iter (fun k v -> trace "multivar" "%a (%d) -----> %a" S.Var.pretty_trace k (S.Var.hash k) S.Dom.pretty v) rho
-              )
-              (*LHM.replace called x lowest_prio*)) unstable_vs;
-          solver ();
+        ) else (
+          if tracing then trace "lock" "%d unlocking %a in iterate" prio S.Var.pretty_trace x;
+          LHM.unlock x rho;
         )
       in
-      solver ();
-      (* Before we solved all unstable vars in rho with a rhs in a loop. This is unneeded overhead since it also solved unreachable vars (reachability only removes those from rho further down). *)
-      (* After termination, only those variables are stable which are
+
+      let highest_thread_id = 2 in
+      if (thread_id < highest_thread_id) then ( 
+        lower_in_search_phase := true;
+      );
+      let to_iterate = find_work [ x ] VS.empty in
+      if (thread_id < highest_thread_id) then ( 
+        lower_in_search_phase := false;
+      );
+      begin match to_iterate with
+        | Some x -> begin 
+          if tracing then trace "start" "Thread %d started at %a" thread_id S.Var.pretty_trace x;
+          LHM.lock x rho; (* We should bundle data for variables again, so that 
+                             lock locks the complete variable (even if we consistently
+                             use rho, lock is also required for LHM to function properly) *)
+          LHM.replace called x prio;
+          LHM.unlock x rho;
+          iterate x
+          end
+        | None -> () end;
+      if (thread_id < highest_thread_id) then ( 
+        if tracing then trace "finish" "Thread %d finished" thread_id;
+        (* Unix.sleepf 0.01; *)
+        if (not !main_finished) then (
+          solve_thread x thread_id
+        )
+      )
+      else (
+        if tracing then trace "finish" "Thread %d finished" thread_id;
+        main_finished := true;
+      )
+    in
+
+    let set_start (x,d) =
+      init x;
+      LHM.replace rho x d;
+      LHM.replace stable x highest_prio;
+    (* iterate x Widen *)
+    in
+
+    let start_threads x =
+      (* let threads = Array.init nr_threads (fun j -> *)
+      (*   Domain.spawn (fun () ->  *)
+      (*     if Logs.Level.should_log Debug then Printexc.record_backtrace true; *)
+      (*     Unix.sleepf (Float.mul (float j) 0.01); *)
+      (*     try *)
+      (*       if tracing then trace "start" "%d started" j; *)
+      (*       solve_thread x j *)
+      (*     with  *)
+      (*       e -> Printexc.print_backtrace stderr; *)
+      (*       raise e *)
+      (*   )) in  *)
+      (* Array.iter Domain.join threads; *)
+      let main_solver_thread = Domain.spawn (fun () -> solve_thread x 2) in
+      let low_solver_thread = Domain.spawn (fun () -> solve_thread x 1) in
+      (* let lower_solver_thread = Domain.spawn (fun () -> solve_thread x 0) in *)
+      Domain.join main_solver_thread;
+      if tracing then (PLHM.iter (fun k v -> trace "cpri" "Thread %d iterated %d times" k v) iterate_counter)
+    in
+
+    (* Imperative part starts here*)
+    start_event ();
+
+    List.iter set_start st;
+
+    List.iter init vs;
+    (* If we have multiple start variables vs, we might solve v1, then while solving v2 we side some global which v1 depends on with a new value. Then v1 is no longer stable and we have to solve it again. *)
+    let i = ref 0 in
+    let rec solver () = (* as while loop in paper *)
+      incr i;
+      let unstable_vs = List.filter (neg (fun x -> LHM.find_default stable x lowest_prio < lowest_prio)) vs in
+      if unstable_vs <> [] then (
+        if Logs.Level.should_log Debug then (
+          if !i = 1 then Logs.newline ();
+          Logs.debug "Unstable solver start vars in %d. phase:" !i;
+          List.iter (fun v -> Logs.debug "\t%a" S.Var.pretty_trace v) unstable_vs;
+          Logs.newline ();
+          flush_all ();
+        );
+        List.iter (fun x -> (*LHM.replace called x highest_prio;*)
+          if tracing then trace "multivar" "solving for %a" S.Var.pretty_trace x;
+          start_threads x;
+          if tracing then (
+            trace "multivar" "current mapping:";
+            LHM.iter (fun k v -> trace "multivar" "%a (%d) -----> %a" S.Var.pretty_trace k (S.Var.hash k) S.Dom.pretty v) rho
+          )
+          (*LHM.replace called x lowest_prio*)) unstable_vs;
+        solver ();
+      )
+    in
+    solver ();
+    (* Before we solved all unstable vars in rho with a rhs in a loop. This is unneeded overhead since it also solved unreachable vars (reachability only removes those from rho further down). *)
+    (* After termination, only those variables are stable which are
        * - reachable from any of the queried variables vs, or
        * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)
 
-      stop_event ();
-      print_data_verbose data "Data after iterate completed";
+    stop_event ();
+    print_data_verbose data "Data after iterate completed";
 
-      (* TODO: somehow print wpoints*)
-      (*if GobConfig.get_bool "dbg.print_wpoints" then (
+    (* TODO: somehow print wpoints*)
+    (*if GobConfig.get_bool "dbg.print_wpoints" then (
         Logs.newline ();
         Logs.debug "Widening points:";
         HM.iter (fun k () -> Logs.debug "%a" S.Var.pretty_trace k) wpoint;
@@ -371,10 +466,10 @@ module Base : GenericEqSolver =
         );*)
 
 
-      print_data_verbose data "Data after postsolve";
+    print_data_verbose data "Data after postsolve";
 
-      LHM.to_hashtbl rho
-  end
+    LHM.to_hashtbl rho
+end
 
 let () =
   Selector.add_solver ("td_parallel_stealing", (module PostSolver.EqIncrSolverFromEqSolver (Base)));

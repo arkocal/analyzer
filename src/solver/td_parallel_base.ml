@@ -47,6 +47,9 @@ module Base : GenericCreatingEqSolver =
       root = LHM.create map_size;
     }
 
+    let iter_cnt_var = HM.create 10
+    let total_iter_count = ref 0
+
     let print_data data =
       Logs.debug "|rho|=%d" (LHM.length data.rho);
       Logs.debug "|stable|=%d" (LHM.length data.stable);
@@ -210,6 +213,8 @@ module Base : GenericCreatingEqSolver =
 
           (* begining of iterate*)
           if tracing then trace "iter" "iterate %a, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (LHM.mem called x) (LHM.mem stable x) (LHM.mem wpoint x);
+          HM.add iter_cnt_var x (1 + HM.find_default iter_cnt_var x 0);
+          total_iter_count := !total_iter_count + 1;
           LHM.lock x rho;
           init x;
           assert (S.system x <> None);
@@ -321,6 +326,10 @@ module Base : GenericCreatingEqSolver =
 
 
       print_data_verbose data "Data after postsolve";
+    
+      let total_iter = HM.fold (fun k v acc -> v + acc) iter_cnt_var 0 in
+    if tracing then trace "count" "Total iterations: %d" total_iter;
+    if tracing then trace "count" "Total iterations by ref: %d" !total_iter_count;
 
       LHM.to_hashtbl rho
   end
