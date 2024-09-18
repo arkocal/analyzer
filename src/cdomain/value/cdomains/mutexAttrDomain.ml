@@ -21,7 +21,7 @@ end
 include Lattice.FlatConf (struct include Printable.DefaultConf let bot_name = "Uninitialized" let top_name = "Top" end) (MutexKind)
 
 (* Needed because OS X is weird and assigns different constants than normal systems... :( *)
-let recursive_int = DomainsafeLazy.make_lazy (
+let recursive_int = DomainsafeLazy.from_fun (fun () ->
   let res = ref (Z.of_int 2) in (* Use OS X as the default, it doesn't have the enum *)
   GoblintCil.iterGlobals !Cilfacade.current_file (function
       | GEnumTag (einfo, _) ->
