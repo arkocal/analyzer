@@ -57,7 +57,6 @@ module Base : GenericEqSolver =
       let data = create_empty_data ()
       in
 
-      let term  = GobConfig.get_bool "solvers.td3.term" in
       let called = LHM.create 10 in
 
       let infl = data.infl in
@@ -181,18 +180,7 @@ module Base : GenericEqSolver =
           let old = LHM.find rho x in (* d from older iterate *) (* find old value after eq since wpoint restarting in eq/query might have changed it meanwhile *)
           let wpd = (* d after widen/narrow (if wp) *)
             if not wp then eqd
-            else (
-              if tracing then trace "wpoint" "widening %a" S.Var.pretty_trace x;
-              if term then
-                match phase with
-                | Widen -> S.Dom.widen old (S.Dom.join old eqd)
-                | Narrow when GobConfig.get_bool "exp.no-narrow" -> old (* no narrow *)
-                | Narrow ->
-                  (* assert S.Dom.(leq eqd old || not (leq old eqd)); (* https://github.com/goblint/analyzer/pull/490#discussion_r875554284 *) *)
-                  S.Dom.narrow old eqd
-              else
-                box old eqd
-            )
+            else box old eqd
           in
           if tracing then trace "dom_equal" "equal: %b\n old: %a\n new: %a" (S.Dom.equal wpd old) S.Dom.pretty old S.Dom.pretty wpd;
           if not (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old wpd) ()) then ( 
@@ -212,11 +200,7 @@ module Base : GenericEqSolver =
               if tracing then trace "iter" "iterate still unstable %a" S.Var.pretty_trace x;
               (iterate[@tailcall]) x Widen
             ) else (
-              if term && phase = Widen && LHM.mem wpoint x then ( (* TODO: or use wp? *)
-                LHM.remove stable x;
-                if tracing then trace "iter" "iterate narrow";
-                (iterate[@tailcall]) ~reuse_eq:eqd x Narrow
-              ) else if remove_wpoint && (not term || phase = Narrow) then ( (* this makes e.g. nested loops precise, ex. tests/regression/34-localization/01-nested.c - if we do not remove wpoint, the inner loop head will stay a wpoint and widen the outer loop variable. *)
+              if remove_wpoint then ( (* this makes e.g. nested loops precise, ex. tests/regression/34-localization/01-nested.c - if we do not remove wpoint, the inner loop head will stay a wpoint and widen the outer loop variable. *)
                 if tracing && (LHM.mem wpoint x) then trace "wpoint" "iterate removing wpoint %a" S.Var.pretty_trace x;
                 LHM.remove wpoint x
               )
