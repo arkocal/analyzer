@@ -167,6 +167,7 @@ let check_arguments () =
   if String.starts_with (get_string "solver") "td_parallel" || get_string "solver" = "td_simplified" then (
     Logs.info "The constraint system will be solved with a parallelized solver.";
     (* all parallel solvers unsupported *)
+    if get_int "solvers.td3.parallel_domains" < 0 then fail "solvers.td3.parallel_domains cannot be negative.";
     if get_bool "allfuns" || get_bool "nonstatic" then fail "Parallel solvers cannot solve for multiple variables. Thus they are incompatible with 'allfuns' and 'nonstatic'.";
     if get_bool "ana.opt.hashcons" then (set_bool "ana.opt.hashcons" false; warn "Hashconsing is disabled when using a parallelized solver!");
     if get_bool "solvers.td3.term" then warn "Parallelized solvers do not support widening and narrowing phases implied by 'solvers.td3.term'";

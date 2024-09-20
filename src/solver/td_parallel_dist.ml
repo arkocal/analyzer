@@ -147,7 +147,6 @@ module Base : GenericCreatingEqSolver =
       in
 
       let set_start (x,d) =
-        if tracing then trace "sol2" "set_start %a ## %a" S.Var.pretty_trace x S.Dom.pretty d;
         init start_rho x;
         HM.replace start_rho x d;
         HM.replace start_stable x ();
@@ -166,7 +165,7 @@ module Base : GenericCreatingEqSolver =
         let wpoint = sd.wpoint in
 
         let add_infl y x =
-          if tracing then trace "infl" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
+          if tracing then trace "infl" "%d add %a influences %a" job_id S.Var.pretty_trace y S.Var.pretty_trace x;
           HM.replace infl y (VS.add x (HM.find_default infl y VS.empty));
         in
 
@@ -181,11 +180,13 @@ module Base : GenericCreatingEqSolver =
           VS.iter (fun y ->
               if not (HM.mem stable y) then
                 ()
-              else if HM.mem called y then
-                HM.remove stable y
-              else (
+              else if HM.mem called y then (
+                if tracing then trace "destab" "%d stable remove %a" job_id S.Var.pretty_trace y;
+                HM.remove stable y 
+              ) else (
                 let inner_w = HM.find_default infl y VS.empty in
                 HM.replace infl y VS.empty;
+                if tracing then trace "destab" "%d stable remove %a" job_id S.Var.pretty_trace y;
                 HM.remove stable y;
                 destabilize inner_w
               )
@@ -228,11 +229,11 @@ module Base : GenericCreatingEqSolver =
               ()
             else (
               HM.replace created_vars y ();
-              let sd = create_empty_data () in
-              let sd = {sd with rho = HM.copy start_rho; stable = HM.copy start_stable} in
+              let new_sd = create_empty_data () in
+              let new_sd = {new_sd with rho = HM.copy start_rho; stable = HM.copy start_stable} in
               let new_id = Atomic.fetch_and_add job_id_counter 1 in
               if tracing then trace "thread_pool" "%d adding job %d to solve for %a(%d)" job_id new_id S.Var.pretty_trace y (S.Var.hash y);
-              promises := (Thread_pool.add_work pool (fun () -> solve_single false y sd new_id))::!promises
+              promises := (Thread_pool.add_work pool (fun () -> solve_single false y new_sd new_id))::!promises
             );
             GobMutex.unlock prom_mutex
           in
@@ -249,7 +250,8 @@ module Base : GenericCreatingEqSolver =
             if not wp then eqd
             else box old eqd
           in
-          if (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old wpd) ()) then (
+          (* TODO: wrap S.Dom.equal in timing if a reasonable threadsafe timing becomes available *)
+          if S.Dom.equal old wpd then (
             (* old = wpd*)
             if HM.mem stable x then (
               Option.may (add_infl x) orig;
@@ -277,9 +279,9 @@ module Base : GenericCreatingEqSolver =
         and add_side_to_struct y d = 
           let revive_suspended () =
             GobMutex.lock prom_mutex;
-            List.iter (fun (is_primary, z, sd, id) ->
+            List.iter (fun (is_primary, z, rsd, id) ->
                 if tracing then trace "revive" "reviving job %d solving for %a" id S.Var.pretty_trace z;
-                promises := (Thread_pool.add_work pool (fun () -> solve_single is_primary z sd id))::!promises
+                promises := (Thread_pool.add_work pool (fun () -> solve_single is_primary z rsd id))::!promises
               ) !suspended_vars;
             suspended_vars := [];
             GobMutex.unlock prom_mutex
@@ -377,13 +379,10 @@ module Base : GenericCreatingEqSolver =
         Logs.debug "Widening points:";
         HM.iter (fun k () -> Logs.debug "%a" S.Var.pretty_trace k) wpoint;
         Logs.newline ();
-        );
-
-
-        print_data_verbose data "Data after postsolve";*)
+        );*)
 
       (* TODO: make a better merge here*)
-      let final_rho = List.fold (fun acc (_,_,sd,_) -> 
+      let final_rho = List.fold (fun acc (_,_,sd,job_id) -> 
           HM.merge (
             fun k ao bo -> 
               match ao, bo with
@@ -391,7 +390,7 @@ module Base : GenericCreatingEqSolver =
               | Some a, None -> ao
               | None, Some b -> bo
               | Some a, Some b -> if S.Dom.equal a b then ao 
-                else (if tracing then trace "dbg_para" "Inconsistent data for %a:\n left: %a\n right: %a" S.Var.pretty_trace k S.Dom.pretty a S.Dom.pretty b; Some (S.Dom.join a b)) 
+                else (if tracing then trace "dbg_para" "Inconsistent data for %a:\n left: %a\n right (%d): %a" S.Var.pretty_trace k S.Dom.pretty a job_id S.Dom.pretty b; Some (S.Dom.join a b)) 
           ) acc sd.rho
         ) start_rho !suspended_vars in
       if tracing then trace "dbg_para" "final_rho len: %d" (HM.length final_rho);
