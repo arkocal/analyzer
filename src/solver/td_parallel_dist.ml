@@ -1,12 +1,9 @@
-(** Terminating, parallelized top-down solver with side effects ([td_parallel_dist]).
+(** Terminating, parallelized top-down solver with side effects. ([td_parallel_dist]).*)
 
-    @see <https://doi.org/10.1017/S0960129521000499> Seidl, H., Vogler, R. Three improvements to the top-down solver.
-    @see <https://arxiv.org/abs/2209.10445> Interactive Abstract Interpretation: Reanalyzing Whole Programs for Cheap. *)
-
-(** Terminating top down solver that is parallelized for some cases, where multiple unknowns have to be solved for a rhs. *)
-(* TD3: see paper 'Three Improvements to the Top-Down Solver' https://dl.acm.org/doi/10.1145/3236950.3236967
- * Option solvers.td3.* (default) ? true : false (solver in paper):
- * - term (true) ? use phases for widen+narrow (TDside) : use box (TDwarrow)*)
+(** Top down solver that is parallelized. TODO: better description *)
+(* Options:
+ * - solvers.td3.parallel_domains (default: 2): Maximal number of Domains that the thread-pool of the solver can use in parallel.
+ * TODO: support 'solvers.td3.remove-wpoint' option? currently it acts as if this option was always enabled *)
 
 open Batteries
 open ConstrSys
@@ -29,8 +26,8 @@ module Base : GenericCreatingEqSolver =
       type obs
       type res = NewSide | Fin
 
-      val process_updates: obs -> ((S.Var.t * S.Dom.t) -> unit) -> obs
-      val add_side: (unit -> unit) -> (S.Var.t * S.Dom.t) -> unit
+      val process_updates: int -> obs -> ((S.Var.t * S.Dom.t) -> unit) -> obs
+      val add_side: int -> (unit -> unit) -> (S.Var.t * S.Dom.t) -> unit
       val no_observations: unit -> obs
 
       val updates_or_fin: (unit -> unit) -> obs -> res
@@ -45,13 +42,15 @@ module Base : GenericCreatingEqSolver =
 
       let mutex = GobMutex.create ()
 
-      let add_side revive (v,d) =
+      let add_side id revive (v,d) =
         GobMutex.lock mutex;
+        if tracing then trace "side_add" "%d adding side to %a (obs index: %d)" id S.Var.pretty_trace v !next_obs;
         sides := (!next_obs,(v,d)) :: !sides;
+        incr next_obs;
         revive ();
         GobMutex.unlock mutex
 
-      let process_updates obs f =
+      let process_updates id obs f =
         GobMutex.lock mutex;
         let current_sides = !sides in
         (* Could also get this from the map, but we are too lazy for that *)
@@ -65,11 +64,11 @@ module Base : GenericCreatingEqSolver =
             doit tl
         in
         doit current_sides;
+        if tracing then trace "process_update" "%d processed sides %d to %d" id (obs) (obs');
         obs'
 
       let updates_or_fin suspend obs =
         GobMutex.lock mutex;
-        if tracing then trace "suspend" "next_obs = %d; obs = %d" !next_obs obs;
         if !next_obs-1 <> obs then
           begin
             GobMutex.unlock mutex; 
@@ -116,6 +115,7 @@ module Base : GenericCreatingEqSolver =
 
     let solve st vs =
       let nr_threads = GobConfig.get_int "solvers.td3.parallel_domains" in
+      let nr_threads = if nr_threads = 0 then (Cpu.numcores ()) else nr_threads in
 
       let pool = Thread_pool.create nr_threads in
 
@@ -123,7 +123,7 @@ module Base : GenericCreatingEqSolver =
       let prom_mutex = GobMutex.create () in
 
       let created_vars = HM.create 10 in
-      let suspended_vars = ref [] in (* TODO other Data structure than list? Set?*)
+      let suspended_vars = ref [] in
 
       let job_id_counter = (Atomic.make 10) in
 
@@ -134,6 +134,10 @@ module Base : GenericCreatingEqSolver =
           print_context_stats rho
          in *)
 
+      (* prepare start_rho and start_stable here to have it available to all tasks *)
+      let start_rho = HM.create 10 in
+      let start_stable = HM.create 10 in
+
       let init rho x =
         if not (HM.mem rho x) then (
           if tracing then trace "init" "init %a" S.Var.pretty_trace x;
@@ -142,10 +146,17 @@ module Base : GenericCreatingEqSolver =
         )
       in
 
+      let set_start (x,d) =
+        if tracing then trace "sol2" "set_start %a ## %a" S.Var.pretty_trace x S.Dom.pretty d;
+        init start_rho x;
+        HM.replace start_rho x d;
+        HM.replace start_stable x ();
+      in
+      start_event ();
+      List.iter set_start st;
+
       (** solves for a single point-of-interest variable (x_poi) *)
-      let rec solve_single is_primary x_poi sd =
-        let job_id = Atomic.fetch_and_add job_id_counter 1 in
-        if tracing then trace "thread_pool" "starting task (primary:%b) %d to solve for %a" is_primary job_id S.Var.pretty_trace x_poi;
+      let rec solve_single is_primary x_poi sd job_id =
 
         let obs = sd.obs in
         let stable = sd.stable in
@@ -184,15 +195,16 @@ module Base : GenericCreatingEqSolver =
         (** iterates to solve for x *)
         let rec iterate orig x = (* ~(inner) solve in td3*)
           let query x y = (* ~eval in td3 *)
-            if tracing then trace "sol_query" "%d entering query for %a; stable %b; called %b" job_id S.Var.pretty_trace y (HM.mem stable y) (HM.mem called y);
+            if tracing then trace "sol_query" "%d query for %a from %a; stable %b; called %b" job_id S.Var.pretty_trace y S.Var.pretty_trace x (HM.mem stable y) (HM.mem called y);
             if HM.mem stable y || HM.mem called y then (
-              if HM.mem called y then HM.replace wpoint y ();
+              if HM.mem called y then (HM.replace wpoint y ());
               add_infl y x
             ) else (
               if S.system y = None then (
                 init rho y;
                 HM.replace stable y ();
-                obs := Sides.process_updates !obs handle_side; (* For vars without constraints, we need to handle sides here *)
+                obs := Sides.process_updates job_id !obs handle_side; (* For vars without constraints, we need to handle sides here *)
+                add_infl y x
               ) else (
                 HM.replace stable y ();
                 HM.replace called y ();
@@ -205,8 +217,8 @@ module Base : GenericCreatingEqSolver =
           in
 
           let side x y d = (* side from x to y; only to variables y w/o rhs; x only used for trace *)
-            if tracing then trace "side" "side to %a (wpx: %b) from %a ## value: %a" S.Var.pretty_trace y (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
-            do_side y d
+            if tracing then trace "side" "%d side to %a (wpx: %b) from %a" job_id S.Var.pretty_trace y (HM.mem wpoint y) S.Var.pretty_trace x;
+            add_side_to_struct y d
           in
 
           let create x y = (* create called from x on y *)
@@ -217,7 +229,10 @@ module Base : GenericCreatingEqSolver =
             else (
               HM.replace created_vars y ();
               let sd = create_empty_data () in
-              promises := (Thread_pool.add_work pool (fun () -> solve_single false y sd))::!promises
+              let sd = {sd with rho = HM.copy start_rho; called = HM.copy start_stable} in
+              let new_id = Atomic.fetch_and_add job_id_counter 1 in
+              if tracing then trace "thread_pool" "%d adding job %d to solve for %a(%d)" job_id new_id S.Var.pretty_trace y (S.Var.hash y);
+              promises := (Thread_pool.add_work pool (fun () -> solve_single false y sd new_id))::!promises
             );
             GobMutex.unlock prom_mutex
           in
@@ -228,7 +243,7 @@ module Base : GenericCreatingEqSolver =
           assert (S.system x <> None);
           let wp = HM.mem wpoint x in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
           let eqd = eq x (query x) (side x) (create x) in
-          obs := Sides.process_updates !obs handle_side;
+          obs := Sides.process_updates job_id !obs handle_side;
           let old = HM.find rho x in
           let wpd = (* d after widen/narrow (if wp) *)
             if not wp then eqd
@@ -246,9 +261,10 @@ module Base : GenericCreatingEqSolver =
             )
           ) else (
             (* old != wpd*)
+            if tracing then trace "update" "%d set %a value: %a" job_id S.Var.pretty_trace x S.Dom.pretty wpd;
+            HM.replace rho x wpd;
             let w = HM.find_default infl x VS.empty in
             HM.replace infl x VS.empty;
-            HM.replace rho x wpd;
             destabilize w;
             if HM.mem stable x then (
               Option.may (add_infl x) orig;
@@ -258,18 +274,18 @@ module Base : GenericCreatingEqSolver =
               (iterate[@tailcall]) orig x
             )
           )
-        and do_side y d = 
+        and add_side_to_struct y d = 
           let revive_suspended () =
             GobMutex.lock prom_mutex;
-            List.iter (fun (top, z, sd) ->
-                if tracing then trace "revive" "reviving %a" S.Var.pretty_trace z;
-                promises := (Thread_pool.add_work pool (fun () -> solve_single top z sd))::!promises
+            List.iter (fun (is_primary, z, sd, id) ->
+                if tracing then trace "revive" "reviving job %d solving for %a" id S.Var.pretty_trace z;
+                promises := (Thread_pool.add_work pool (fun () -> solve_single is_primary z sd id))::!promises
               ) !suspended_vars;
             suspended_vars := [];
             GobMutex.unlock prom_mutex
           in
           (* TODO: Does doing it in this order somehow effect the locality of sides? *)
-          Sides.add_side revive_suspended (y, d)
+          Sides.add_side job_id revive_suspended (y, d)
         and handle_side (y, v) =
           init rho y; (* necessary? *)
           let old_v = HM.find rho y in
@@ -277,9 +293,9 @@ module Base : GenericCreatingEqSolver =
             ()
           else (
             let new_v = S.Dom.widen old_v (S.Dom.join old_v v) in
-            if tracing then trace "side" "set side %a value: %a" S.Var.pretty_trace y S.Dom.pretty (S.Dom.widen v (S.Dom.join v old_v));
-            HM.replace rho y (S.Dom.widen v (S.Dom.join v old_v));
-            do_side y new_v;
+            if tracing then trace "update" "%d side set %a value: %a" job_id S.Var.pretty_trace y S.Dom.pretty new_v;
+            HM.replace rho y new_v;
+            add_side_to_struct y new_v;
             HM.replace stable y ();
             let w = HM.find_default infl y VS.empty in
             HM.replace infl y VS.empty;
@@ -288,52 +304,46 @@ module Base : GenericCreatingEqSolver =
         in
 
         (* begining of solve_single *)
-        HM.replace stable x_poi ();
-        HM.replace called x_poi ();
-        iterate None x_poi;
-        let suspend () =
-          GobMutex.lock prom_mutex;
-          if tracing then trace "suspend" "suspending %a" S.Var.pretty_trace x_poi;
-          suspended_vars := (is_primary, x_poi, sd)::!suspended_vars;
-          GobMutex.unlock prom_mutex
-        in
+        if not (HM.mem stable x_poi) then (
+          HM.replace stable x_poi ();
+          HM.replace called x_poi ();
+          iterate None x_poi
+        );
+
         let rec wait () =
+          let suspend () =
+            GobMutex.lock prom_mutex;
+            if tracing then trace "suspend" "suspending job %d solving for %a" job_id S.Var.pretty_trace x_poi;
+            suspended_vars := (is_primary, x_poi, sd, job_id)::!suspended_vars;
+            GobMutex.unlock prom_mutex
+          in
           match Sides.updates_or_fin suspend !obs with
           | Sides.NewSide -> (
-              obs := Sides.process_updates !obs handle_side;
+              if tracing then trace "wait" "%d processing new sides" job_id;
+              obs := Sides.process_updates job_id !obs handle_side;
               if HM.mem stable x_poi then
                 wait ()
-              else
+              else (
                 HM.replace stable x_poi ();
-              HM.replace called x_poi ();
-              iterate None x_poi;
-              wait ()
+                HM.replace called x_poi ();
+                iterate None x_poi;
+                wait ())
             ) 
-          | Sides.Fin -> ()
+          | Sides.Fin -> if tracing then trace "wait" "%d all sides processed -> suspended" job_id
         in
         wait ()
       in
 
-      (* Imperative part starts here*)
-      let init_data = create_empty_data () in
+      (* beginning of main solve (initial mapping set above) *)
+      let start_data = create_empty_data () in
+      let start_data = {start_data with rho = HM.copy start_rho; called = HM.copy start_stable} in
+      List.iter (init start_data.rho) vs;
 
-      let set_start (x,d) =
-        if tracing then trace "sol2" "set_start %a ## %a" S.Var.pretty_trace x S.Dom.pretty d;
-        init init_data.rho x;
-        HM.replace init_data.rho x d;
-        HM.replace init_data.stable x ();
-      in
-
-      start_event ();
-
-      List.iter set_start st;
-
-      List.iter (init init_data.rho) vs;
       (* If we have multiple start variables vs, we might solve v1, then while solving v2 we side some global which v1 depends on with a new value. Then v1 is no longer stable and we have to solve it again. *)
       let i = ref 0 in
       let rec solver () = (* as while loop in paper *)
         incr i;
-        let unstable_vs = List.filter (neg (HM.mem init_data.stable)) vs in
+        let unstable_vs = List.filter (neg (HM.mem start_data.stable)) vs in
         if unstable_vs <> [] then (
           if Logs.Level.should_log Debug then (
             if !i = 1 then Logs.newline ();
@@ -345,7 +355,8 @@ module Base : GenericCreatingEqSolver =
           List.iter (fun x ->
               if tracing then trace "multivar" "solving for %a" S.Var.pretty_trace x;
               Domainslib.Task.run pool (fun () -> 
-                  solve_single true x init_data; 
+                  let first_id = Atomic.fetch_and_add job_id_counter 1 in
+                  solve_single true x start_data first_id; 
                   Thread_pool.await_all pool (!promises)
                 )
             ) unstable_vs;
@@ -354,7 +365,6 @@ module Base : GenericCreatingEqSolver =
       in
       solver ();
       Thread_pool.finished_with pool;
-      (* Before we solved all unstable vars in rho with a rhs in a loop. This is unneeded overhead since it also solved unreachable vars (reachability only removes those from rho further down). *)
       (* After termination, only those variables are stable which are
        * - reachable from any of the queried variables vs, or
        * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)
@@ -373,7 +383,7 @@ module Base : GenericCreatingEqSolver =
         print_data_verbose data "Data after postsolve";*)
 
       (* TODO: make a better merge here*)
-      let final_rho = List.fold (fun acc (_,_,sd) -> 
+      let final_rho = List.fold (fun acc (_,_,sd,_) -> 
           HM.merge (
             fun k ao bo -> 
               match ao, bo with
@@ -383,7 +393,7 @@ module Base : GenericCreatingEqSolver =
               | Some a, Some b -> if S.Dom.equal a b then ao 
                 else (if tracing then trace "dbg_para" "Inconsistent data for %a:\n left: %a\n right: %a" S.Var.pretty_trace k S.Dom.pretty a S.Dom.pretty b; Some (S.Dom.join a b)) 
           ) acc sd.rho
-        ) (HM.create 10) !suspended_vars in
+        ) start_rho !suspended_vars in
       if tracing then trace "dbg_para" "final_rho len: %d" (HM.length final_rho);
       final_rho
   end
