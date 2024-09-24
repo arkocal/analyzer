@@ -67,6 +67,7 @@ depends: [
   "benchmark" {with-test}
   "conf-gcc"
   "domainslib"
+  "processor"
 ]
 depopts: [
   "apron" {>= "v0.9.15"}

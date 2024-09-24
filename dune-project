@@ -67,6 +67,7 @@ Goblint includes analyses for assertions, overflows, deadlocks, etc and can be e
     (benchmark :with-test) ; TODO: make this optional somehow, (optional) on bench executable doesn't work
     conf-gcc ; ensures opam-repository CI installs real gcc from homebrew on MacOS
     domainslib
+    processor
   )
   (depopts
     (apron (>= v0.9.15))

@@ -13,6 +13,7 @@
    goblint_constraint
    goblint_incremental
    goblint-cil
+   processor
    domainslib)
  (flags :standard -open Goblint_std -open Goblint_logs)
  (preprocess

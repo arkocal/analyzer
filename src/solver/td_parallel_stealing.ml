@@ -101,10 +101,15 @@ struct
     let called = data.called in
     let stolen = data.stolen in
     let main_finished = ref false in
+    (* Search time must be measured manually, as Timing.wrap does not seem to support parallelism. *)
+    let search_time = ref 0.0 in 
+    let nr_restarts = ref 0 in
 
     let () = print_solver_stats := fun () ->
       Logs.info "Lower in search phase: %b" !lower_in_search_phase;
       print_iteration_counts iterate_counter;
+      Logs.info "Search time: %f" !search_time;
+      Logs.info "Nr restarts: %d" !nr_restarts;
       print_data data;
       print_context_stats @@ LHM.to_hashtbl rho
     in
@@ -183,7 +188,7 @@ struct
             | Some y -> (
               Some y
             )
-            | None -> find_work (xs @ !new_work ) (VS.add_seq (Seq.of_list !new_work) seen)
+            | None -> find_work (xs @ !new_work) (VS.add_seq (Seq.of_list !new_work) seen)
           )
       in
 
@@ -363,7 +368,9 @@ struct
       if (thread_id < highest_thread_id) then ( 
         lower_in_search_phase := true;
       );
+      let start_time = Unix.gettimeofday () in
       let to_iterate = find_work [ x ] VS.empty in
+      search_time := !search_time +. (Unix.gettimeofday () -. start_time);
       if (thread_id < highest_thread_id) then ( 
         lower_in_search_phase := false;
       );
@@ -382,6 +389,8 @@ struct
         if tracing then trace "finish" "Thread %d finished" thread_id;
         (* Unix.sleepf 0.01; *)
         if (not !main_finished) then (
+          nr_restarts := !nr_restarts + 1;
+          (* Unix.sleepf 0.05; *)
           solve_thread x thread_id
         )
       )
@@ -411,11 +420,24 @@ struct
       (*       raise e *)
       (*   )) in  *)
       (* Array.iter Domain.join threads; *)
-      let main_solver_thread = Domain.spawn (fun () -> solve_thread x 2) in
-      let low_solver_thread = Domain.spawn (fun () -> solve_thread x 1) in
+      (* let main_solver_thread = Domain.spawn (fun () -> solve_thread x 2) in *)
       (* let lower_solver_thread = Domain.spawn (fun () -> solve_thread x 0) in *)
-      Domain.join main_solver_thread;
-      if tracing then (PLHM.iter (fun k v -> trace "cpri" "Thread %d iterated %d times" k v) iterate_counter)
+      if (nr_threads > 1) then (
+        let low_solver_thread = Domain.spawn (fun () -> 
+          (* Processor.Affinity.set_cpus (Processor.Cpu.from_core 4 Processor.Topology.t); *)
+          solve_thread x 1) in
+        (* Processor.Affinity.set_cpus (Processor.Cpu.from_core 0 Processor.Topology.t); *)
+        solve_thread x 2;
+        Domain.join low_solver_thread;
+      )
+      else (
+        solve_thread x 2
+      );
+      (* Domain.join main_solver_thread; *)
+      (* Domain.join lower_solver_thread; *)
+      if tracing then (PLHM.iter (fun k v -> trace "cpri" "Thread %d iterated %d times" k v) iterate_counter);
+      if tracing then trace "stime" "Search time %f" !search_time;
+      if tracing then trace "stime" "Nr restarts %d" !nr_restarts;
     in
 
     (* Imperative part starts here*)
@@ -439,7 +461,7 @@ struct
         );
         List.iter (fun x -> (*LHM.replace called x highest_prio;*)
           if tracing then trace "multivar" "solving for %a" S.Var.pretty_trace x;
-          start_threads x;
+          Timing.wrap "start_threads" start_threads x;
           if tracing then (
             trace "multivar" "current mapping:";
             LHM.iter (fun k v -> trace "multivar" "%a (%d) -----> %a" S.Var.pretty_trace k (S.Var.hash k) S.Dom.pretty v) rho
