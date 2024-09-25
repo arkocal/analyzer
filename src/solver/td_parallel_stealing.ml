@@ -104,6 +104,7 @@ struct
     (* Search time must be measured manually, as Timing.wrap does not seem to support parallelism. *)
     let search_time = ref 0.0 in 
     let nr_restarts = ref 0 in
+    (* let main_finished_mutex = Mutex.create () in *)
 
     let () = print_solver_stats := fun () ->
       Logs.info "Lower in search phase: %b" !lower_in_search_phase;
@@ -163,33 +164,37 @@ struct
       in
 
       let rec find_work (worklist: S.v list) (seen: VS.t) = 
-        let not_global v = S.system v <> None in
+        (* let not_global v = S.system v <> None in *)
         match worklist with
         | [] -> None
-        | x :: xs -> 
-        if tracing then trace "search" "%d searching for work %a" prio S.Var.pretty_trace x;
-        if (not_global x && prio < called_prio x && prio < stable_prio x) then (
-            if tracing then trace "work" "%d found work %a" prio S.Var.pretty_trace x;
-            Some x
+        | x :: xs ->
+          if thread_id = 9 then Some x else (if !main_finished then None else 
+            (
+              ignore (Sys.opaque_identity (ref ()));
+              find_work worklist seen)
           )
-        else (
-          let new_work = ref [] in
-          let query (y: S.v): S.d =
-              new_work := y :: !new_work;
-              LHM.find_default rho y (S.Dom.bot ())
-          in
-          let side _ _ = () in
-          ignore @@ eq x query side;
-          (* VS.add_seq (Seq.of_list !new_work) seen; *)
-          new_work := List.filter (fun y -> not (VS.mem y seen)) !new_work;
-          let candidate = List.find_opt (fun z ->
-            not_global z && prio <= called_prio z && prio < stable_prio z) !new_work in
-          match candidate with
-            | Some y -> (
-              Some y
-            )
-            | None -> find_work (xs @ !new_work) (VS.add_seq (Seq.of_list !new_work) seen)
-          )
+      (* if tracing then trace "search" "%d searching for work %a" prio S.Var.pretty_trace x; *)
+      (* if (not_global x && prio < called_prio x && prio < stable_prio x) then ( *)
+      (*   if tracing then trace "work" "%d found work %a" prio S.Var.pretty_trace x; *)
+      (*   Some x *)
+      (* ) *)
+      (* else ( *)
+      (*   (* TODO: rewrite this using more immutable data *) *)
+      (*   let new_work = ref [] in *)
+      (*   let query (y: S.v): S.d = *)
+      (*     new_work := y :: !new_work; *)
+      (*     LHM.find_default rho y (S.Dom.bot ()) *)
+      (*   in *)
+      (*   let side _ _ = () in *)
+      (*   ignore @@ eq x query side; *)
+      (*   (* VS.add_seq (Seq.of_list !new_work) seen; *) *)
+      (*   new_work := List.filter (fun y -> not (VS.mem y seen)) !new_work; *)
+      (*   let candidate = List.find_opt (fun z -> *)
+      (*     not_global z && prio <= called_prio z && prio < stable_prio z) !new_work in *)
+      (*   match candidate with *)
+      (*   | Some y -> Some y *)
+      (*   | None -> find_work (xs @ !new_work) (VS.add_seq (Seq.of_list !new_work) seen) *)
+      (* ) *)
       in
 
       let rec iterate (x : S.v) = (* ~(inner) solve in td3*)
@@ -364,39 +369,43 @@ struct
         )
       in
 
-      let highest_thread_id = 2 in
+      let highest_thread_id = 9 in
+
       if (thread_id < highest_thread_id) then ( 
         lower_in_search_phase := true;
       );
-      let start_time = Unix.gettimeofday () in
+      (* let start_time = Unix.gettimeofday () in *)
       let to_iterate = find_work [ x ] VS.empty in
-      search_time := !search_time +. (Unix.gettimeofday () -. start_time);
+      (* search_time := !search_time +. (Unix.gettimeofday () -. start_time); *)
       if (thread_id < highest_thread_id) then ( 
         lower_in_search_phase := false;
       );
-      begin match to_iterate with
-        | Some x -> begin 
+      begin match to_iterate, (thread_id=highest_thread_id) with
+        | _, false -> ()
+        | Some x, _ -> begin 
           if tracing then trace "start" "Thread %d started at %a" thread_id S.Var.pretty_trace x;
           LHM.lock x rho; (* We should bundle data for variables again, so that 
                              lock locks the complete variable (even if we consistently
                              use rho, lock is also required for LHM to function properly) *)
           LHM.replace called x prio;
           LHM.unlock x rho;
-          iterate x
+          if (thread_id = highest_thread_id) then iterate x
           end
-        | None -> () end;
+        | None, _ -> () end;
       if (thread_id < highest_thread_id) then ( 
         if tracing then trace "finish" "Thread %d finished" thread_id;
         (* Unix.sleepf 0.01; *)
         if (not !main_finished) then (
           nr_restarts := !nr_restarts + 1;
           (* Unix.sleepf 0.05; *)
-          solve_thread x thread_id
+          (* while (not !main_finished) do (); done; *)
+          (solve_thread[@tailcall]) x thread_id
         )
       )
       else (
         if tracing then trace "finish" "Thread %d finished" thread_id;
         main_finished := true;
+        Logs.info "Main done";
       )
     in
 
@@ -422,19 +431,11 @@ struct
       (* Array.iter Domain.join threads; *)
       (* let main_solver_thread = Domain.spawn (fun () -> solve_thread x 2) in *)
       (* let lower_solver_thread = Domain.spawn (fun () -> solve_thread x 0) in *)
-      if (nr_threads > 1) then (
-        let low_solver_thread = Domain.spawn (fun () -> 
-          (* Processor.Affinity.set_cpus (Processor.Cpu.from_core 4 Processor.Topology.t); *)
-          solve_thread x 1) in
-        (* Processor.Affinity.set_cpus (Processor.Cpu.from_core 0 Processor.Topology.t); *)
-        solve_thread x 2;
-        Domain.join low_solver_thread;
-      )
-      else (
-        solve_thread x 2
-      );
-      (* Domain.join main_solver_thread; *)
-      (* Domain.join lower_solver_thread; *)
+      let threads = Array.init nr_threads (fun j -> 
+        Domain.spawn (fun () -> solve_thread x (9-j))
+      ) in
+      (* Processor.Affinity.set_cpus (Processor.Cpu.from_core 0 Processor.Topology.t); *)
+      Array.iter Domain.join threads;
       if tracing then (PLHM.iter (fun k v -> trace "cpri" "Thread %d iterated %d times" k v) iterate_counter);
       if tracing then trace "stime" "Search time %f" !search_time;
       if tracing then trace "stime" "Nr restarts %d" !nr_restarts;
