@@ -105,12 +105,15 @@ struct
     let search_time = ref 0.0 in 
     let nr_restarts = Atomic.make 0 in
     (* let main_finished_mutex = Mutex.create () in *)
+    let nr_search = Atomic.make 0 in
+    let nr_work = Atomic.make 0 in
 
     let () = print_solver_stats := fun () ->
       Logs.info "Lower in search phase: %b" !lower_in_search_phase;
       print_iteration_counts iterate_counter;
       Logs.info "Search time: %f" !search_time;
       Logs.info "Nr restarts: %d" (Atomic.get nr_restarts);
+      Logs.info "Search percentage: %f" ((float_of_int (Atomic.get nr_search)) /. (float_of_int ((Atomic.get nr_search) + (Atomic.get nr_work))));
       print_data data;
       print_context_stats @@ LHM.to_hashtbl rho
     in
@@ -162,6 +165,7 @@ struct
             if !main_finished then None else (
               (* Introduce some randomness to prevent getting caught in unproductive sectors *)
               let next_work = if (Random.bool ()) then (xs @ !new_work) else (!new_work @ xs) in
+              (* let next_work = xs @ !new_work in *)
               find_work next_work (VS.add_seq (Seq.of_list !new_work) seen))
           )
       in
@@ -431,19 +435,24 @@ struct
       (* Array.iter Domain.join threads; *)
       (* let main_solver_thread = Domain.spawn (fun () -> solve_thread x 2) in *)
       (* let lower_solver_thread = Domain.spawn (fun () -> solve_thread x 0) in *)
+      let poll () = while (not !main_finished) do
+        if (!lower_in_search_phase) then (Atomic.incr nr_search) else (Atomic.incr nr_work)
+      done in
       let solver_start_time = Unix.gettimeofday () in
       let threads = Array.init nr_threads (fun j -> 
         Domain.spawn (fun () ->
           Processor.Affinity.set_cpus (Processor.Cpu.from_core (8+j) Processor.Topology.t);
           solve_thread x (9-j))
       ) in
+      let poll_thread = Domain.spawn (fun () -> poll ()) in
       (* Processor.Affinity.set_cpus (Processor.Cpu.from_core 0 Processor.Topology.t); *)
       Array.iter Domain.join threads;
+      Domain.join poll_thread;
       if tracing then (PLHM.iter (fun k v -> trace "cpri" "Thread %d iterated %d times" k v) iterate_counter);
       if tracing then trace "stime" "Search time %f" !search_time;
       if tracing then trace "stime" "Nr restarts %d" (Atomic.get nr_restarts);
       !print_solver_stats ();
-      Logs.info "Solver time: %f" (Unix.gettimeofday () -. solver_start_time)
+      Logs.info "Solver time: %f" (Unix.gettimeofday () -. solver_start_time);
     in
 
     (* Imperative part starts here*)
