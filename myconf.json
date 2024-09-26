@@ -1,6 +1,6 @@
 {
   "solver": "td_parallel_stealing",
   "dbg": {
-    "solver-stats-interval": 3
+    "solver-stats-interval": 5
   }
 }
