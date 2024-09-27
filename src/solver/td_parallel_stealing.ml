@@ -84,7 +84,7 @@ struct
     )
 
   let print_iteration_counts counter =
-    PLHM.iter (fun k v -> Logs.info "Thread %d: %d times" k v) counter
+    PLHM.iter (fun k v -> Logs.info "Thread %d iterations: %d" k v) counter
 
   let solve st vs =
 
@@ -449,7 +449,6 @@ struct
       Array.iter Domain.join threads;
       Domain.join poll_thread;
       if tracing then (PLHM.iter (fun k v -> trace "cpri" "Thread %d iterated %d times" k v) iterate_counter);
-      if tracing then trace "stime" "Search time %f" !search_time;
       if tracing then trace "stime" "Nr restarts %d" (Atomic.get nr_restarts);
       !print_solver_stats ();
       Logs.info "Solver time: %f" (Unix.gettimeofday () -. solver_start_time);
