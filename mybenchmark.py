@@ -40,7 +40,7 @@ def process_output(out, err):
     if thread_8_iterations:
         thread_8_average_iteration_time = thread_8_work_time / thread_8_iterations * 1e6
     else:
-        thread_8_average_iteration_time = None
+        thread_8_average_iteration_time = 0
 
     return Result(solver_time, search_percentage, thread_9_iterations, thread_8_iterations,
                   search_time, thread_8_work_time, total_work_time, thread_9_average_iteration_time,

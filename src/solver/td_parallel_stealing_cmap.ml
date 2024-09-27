@@ -143,12 +143,17 @@ struct
 
       let rec find_work (worklist: S.v list) (seen: VS.t) = 
         match worklist, thread_id with
-        | [], _ -> None
+        | [], _ -> 
+          if tracing then trace "work" "%d found no work" prio;
+          None
         | x :: xs, 9 -> Some x
         | x :: xs, _ ->
           if tracing then trace "search" "%d searching for work %a" prio S.Var.pretty_trace x;
           let maybe_eq = S.system x in
-          if (prio < called_prio x && prio < stable_prio x && Option.is_some maybe_eq) then (
+          LHM.lock x data;
+          let workable = prio < called_prio x && prio < stable_prio x && Option.is_some maybe_eq in
+          LHM.unlock x data;
+          if (workable) then (
             if tracing then trace "work" "%d found work %a" prio S.Var.pretty_trace x;
             Some x
           )
@@ -156,13 +161,16 @@ struct
             let new_work = ref [] in
             let query (y: S.v): S.d =
               if (not (VS.mem y seen)) then new_work := y :: !new_work;
-              match LHM.find_option data y with
-              | Some vd -> vd.rho
-              | None -> S.Dom.bot ()
+              LHM.lock y data;
+              let result = match LHM.find_option data y with
+                | Some vd -> vd.rho
+                | None -> S.Dom.bot () in
+              LHM.unlock y data;
+              result
             in
             let side _ _ = () in
             ignore @@ Option.map (fun eq -> eq query side) maybe_eq; 
-              (* eq x query side; *)
+            (* eq x query side; *)
             if !main_finished then None else (
               (* Introduce some randomness to prevent getting caught in unproductive sectors *)
               let next_work = if (Random.bool ()) then (xs @ !new_work) else (!new_work @ xs) in
@@ -407,15 +415,16 @@ struct
                              use rho, lock is also required for LHM to function properly) *)
           if tracing then trace "lock" "%d locked %a in start_threads" prio S.Var.pretty_trace x;
           let old = match (LHM.find_option data x) with
-    | Some vd -> vd
-    | None -> {rho=S.Dom.bot (); called=lowest_prio; stable=lowest_prio} in
+            | Some vd -> vd
+            | None -> {rho=S.Dom.bot (); called=lowest_prio; stable=lowest_prio} in
           if tracing then trace "lock" "%d found old %a in start_threads" prio S.Var.pretty_trace x;
+          (* // TODO this should be safe *)
           LHM.replace data x {old with called=prio};
           if tracing then trace "start" "Thread %d really started at %a" thread_id S.Var.pretty_trace x;
           if tracing then trace "lock" "%d unlocking %a in start_threads" prio S.Var.pretty_trace x;
           LHM.unlock x data;
           (* Prevent lower threads from doing work to measure the overhead from find_work *)
-          if (true || thread_id = 9) then do_work x
+          if (thread_id = 9) then do_work x
           end
         | None -> () end;
       if (thread_id < highest_thread_id) then ( 
