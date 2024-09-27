@@ -1,5 +1,5 @@
 {
-  "solver": "td_parallel_stealing",
+  "solver": "td_parallel_stealing_cmap",
   "dbg": {
     "solver-stats-interval": 5
   }

@@ -8,7 +8,7 @@ struct
   (* double hash to make sure that not all elements in a top-level bucket have the same hash*)
   let bucket_index lhm k = Int.abs ((Hashtbl.hash (H.hash k)) mod (Array.length lhm))
 
-  let create sz = Array.init sz (fun _ -> GobMutex.create (), HM.create 10)
+  let create sz = Array.init sz (fun _ -> GobMutex.create (), HM.create 1001)
 
   let length lhm = Array.fold (fun l (_, hm) -> l + (HM.length hm)) 0 lhm
 
@@ -16,6 +16,11 @@ struct
     let i = bucket_index lhm k in
     let (_, hm) = Array.get lhm i in
     HM.find hm k
+
+  let find_option lhm k = 
+    let i = bucket_index lhm k in
+    let (_, hm) = Array.get lhm i in
+    HM.find_option hm k
 
   let find_default lhm k d =
     let i = bucket_index lhm k in
