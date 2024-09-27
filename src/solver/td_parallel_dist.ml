@@ -229,7 +229,7 @@ module Base : GenericCreatingEqSolver =
             else (
               HM.replace created_vars y ();
               let sd = create_empty_data () in
-              let sd = {sd with rho = HM.copy start_rho; called = HM.copy start_stable} in
+              let sd = {sd with rho = HM.copy start_rho; stable = HM.copy start_stable} in
               let new_id = Atomic.fetch_and_add job_id_counter 1 in
               if tracing then trace "thread_pool" "%d adding job %d to solve for %a(%d)" job_id new_id S.Var.pretty_trace y (S.Var.hash y);
               promises := (Thread_pool.add_work pool (fun () -> solve_single false y sd new_id))::!promises
