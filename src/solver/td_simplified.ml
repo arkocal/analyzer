@@ -187,7 +187,6 @@ module Base : GenericEqSolver =
         init x;
         LHM.replace rho x d;
         LHM.replace stable x ();
-        (* iterate x Widen *)
       in
 
       (* beginning of main solve *)
@@ -231,8 +230,6 @@ module Base : GenericEqSolver =
         LHM.iter (fun k () -> Logs.debug "%a" S.Var.pretty_trace k) wpoint;
         Logs.newline ();
       );
-
-      print_data_verbose data "Data after postsolve";
 
       LHM.to_hashtbl rho
   end

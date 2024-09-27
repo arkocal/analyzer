@@ -208,7 +208,8 @@ module Base : GenericEqSolver =
               else (if tracing then trace "wpoint" "%d box widening %a" prio S.Var.pretty_trace x; box old eqd)
             in
             if tracing then trace "sol" "%d Var: %a (wp: %b)\nOld value: %a\nEqd: %a\nNew value: %a" prio S.Var.pretty_trace x wp S.Dom.pretty old S.Dom.pretty eqd S.Dom.pretty wpd;
-            if not (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old wpd) ()) then ( 
+            (* TODO: wrap S.Dom.equal in timing if a reasonable threadsafe timing becomes available *)
+            if not (S.Dom.equal old wpd) then ( 
               (* old != wpd *)
               if (stable_prio x >= prio && called_prio x >= prio) then (
                 if tracing then trace "sol" "%d Changed" prio;
@@ -239,7 +240,7 @@ module Base : GenericEqSolver =
             LHM.unlock x rho;
           )
         in
-        iterate x;
+        iterate x
       in
 
       let set_start (x,d) =
@@ -305,8 +306,6 @@ module Base : GenericEqSolver =
         Logs.debug "The threads of the td_parallel_stealing solver do not share widening points. They can currently not be printed.";
         Logs.newline ();
       );
-
-      print_data_verbose data "Data after postsolve";
 
       LHM.to_hashtbl rho
   end

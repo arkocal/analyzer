@@ -1,12 +1,9 @@
-(** Terminating top-down solver with side effects. Baseline for comparisons with td_parallel solvers ([td_parallel_base]).
+(** Terminating, parallelized top-down solver with side effects. ([td_parallel_base]). TODO: better Name*)
 
-    @see <https://doi.org/10.1017/S0960129521000499> Seidl, H., Vogler, R. Three improvements to the top-down solver.
-    @see <https://arxiv.org/abs/2209.10445> Interactive Abstract Interpretation: Reanalyzing Whole Programs for Cheap. *)
-
-(** Terminating top down solver that is parallelized for some cases, where multiple unknowns have to be solved for a rhs. *)
-(* TD3: see paper 'Three Improvements to the Top-Down Solver' https://dl.acm.org/doi/10.1145/3236950.3236967
- * Option solvers.td3.* (default) ? true : false (solver in paper):
- * - term (true) ? use phases for widen+narrow (TDside) : use box (TDwarrow)*)
+(** Top down solver that is parallelized. TODO: better description *)
+(* Options:
+ * - solvers.td3.parallel_domains (default: 2): Maximal number of Domains that the solver can use in parallel.
+ * TODO: support 'solvers.td3.remove-wpoint' option? currently it acts as if this option was always enabled *)
 
 open Batteries
 open ConstrSys
@@ -62,8 +59,8 @@ module Base : GenericCreatingEqSolver =
     let job_id_counter = (Atomic.make 10)
 
     let solve st vs =
-
       let nr_threads = GobConfig.get_int "solvers.td3.parallel_domains" in
+      let nr_threads = if nr_threads = 0 then (Cpu.numcores ()) else nr_threads in
 
       let pool = Thread_pool.create nr_threads in
 
@@ -177,9 +174,6 @@ module Base : GenericCreatingEqSolver =
         let side x y d = (* side from x to y; only to variables y w/o rhs; x only used for trace *)
           if tracing then trace "side" "%d side to %a from %a" job_id S.Var.pretty_trace y S.Var.pretty_trace x;
           if tracing then trace "side-v" "%d side to %a (wpx: %b) from %a ## value: %a" job_id S.Var.pretty_trace y (LHM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
-          if S.system y <> None then (
-            Logs.warn "side-effect to unknown w/ rhs: %a, contrib: %a" S.Var.pretty_trace y S.Dom.pretty d;
-          );
           assert (S.system y = None);
           LHM.lock y rho;
           init y;
@@ -208,10 +202,7 @@ module Base : GenericCreatingEqSolver =
         in
 
         (* begining of iterate*)
-        if tracing then (match orig with
-            | Some o -> trace "iter" "%d iterate %a, orig: %a, stable: %b, wpoint: %b" job_id S.Var.pretty_trace x S.Var.pretty_trace o (LHM.mem stable x) (LHM.mem wpoint x)
-            | None -> trace "iter" "%d iterate %a, orig: None, stable: %b, wpoint: %b" job_id S.Var.pretty_trace x (LHM.mem stable x) (LHM.mem wpoint x)
-          );
+        if tracing then trace "iter" "%d iterate %a, stable: %b, wpoint: %b" job_id S.Var.pretty_trace x (LHM.mem stable x) (LHM.mem wpoint x);
         LHM.lock x rho;
         init x;
         assert (S.system x <> None);
@@ -226,8 +217,8 @@ module Base : GenericCreatingEqSolver =
             eqd
           else (if tracing then trace "wpoint" "box widening %a" S.Var.pretty_trace x; box old eqd)
         in
-        if tracing then trace "dom_equal" "%d %a equal: %b\n old: %a\n new: %a" job_id S.Var.pretty_trace x (S.Dom.equal wpd old) S.Dom.pretty old S.Dom.pretty wpd;
-        if (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal wpd old) ()) then (
+        (* TODO: wrap S.Dom.equal in timing if a reasonable threadsafe timing becomes available *)
+        if S.Dom.equal wpd old then (
           (* old = wpd*)
           if LHM.mem stable x then (
             Option.may (add_infl x) orig;
@@ -238,7 +229,7 @@ module Base : GenericCreatingEqSolver =
             LHM.replace stable x ();
             LHM.unlock x rho;
             if tracing then trace "iter" "iterate still unstable %a" S.Var.pretty_trace x;
-            iterate orig prom x job_id
+            (iterate[@tailcall]) orig prom x job_id
           )
         ) else (
           (* old != wpd*)
@@ -251,27 +242,25 @@ module Base : GenericCreatingEqSolver =
           destabilize prom w;
           LHM.lock x rho;
           if LHM.mem stable x then (
-            Option.may (fun o -> if tracing then trace "infl_orig" "new: %a influences origin %a" S.Var.pretty_trace x S.Var.pretty_trace o; add_infl x o) orig;
+            Option.may (add_infl x) orig;
             LHM.remove called x;
             LHM.unlock x rho;
           ) else (
             LHM.replace stable x ();
             LHM.unlock x rho;
             if tracing then trace "iter" "iterate changed %a" S.Var.pretty_trace x;
-            iterate orig prom x job_id
+            (iterate[@tailcall]) orig prom x job_id
           )
         )
       in
 
       let set_start (x,d) =
-        if tracing then trace "sol2" "set_start %a ## %a" S.Var.pretty_trace x S.Dom.pretty d;
         init x;
         LHM.replace rho x d;
         LHM.replace stable x ();
-        (* iterate x Widen *)
       in
 
-      (* Imperative part starts here*)
+      (* beginning of main solve *)
       start_event ();
 
       List.iter set_start st;
@@ -303,7 +292,6 @@ module Base : GenericCreatingEqSolver =
       in
       solver ();
       Thread_pool.finished_with pool;
-      (* Before we solved all unstable vars in rho with a rhs in a loop. This is unneeded overhead since it also solved unreachable vars (reachability only removes those from rho further down). *)
       (* After termination, only those variables are stable which are
        * - reachable from any of the queried variables vs, or
        * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)
@@ -317,9 +305,6 @@ module Base : GenericCreatingEqSolver =
         LHM.iter (fun k () -> Logs.debug "%a" S.Var.pretty_trace k) wpoint;
         Logs.newline ();
       );
-
-
-      print_data_verbose data "Data after postsolve";
 
       LHM.to_hashtbl rho
   end
