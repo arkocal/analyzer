@@ -106,19 +106,6 @@ struct
       (* print_context_stats @@ LHM.to_hashtbl rho *)
     in
 
-    let init x =
-      (* Init must be called while holding x lock *)
-      if not (LHM.mem data x) then (
-        new_var_event x;
-        if tracing then trace "init" "initializing %a(%d)" S.Var.pretty_trace x (S.Var.hash x);
-        LHM.replace data x ({
-          rho=S.Dom.bot ();
-          stable=lowest_prio;
-          called=lowest_prio
-        })
-      )
-    in
-
     (* returns the current called/stable prio value of x. returns lowest_prio if not present *)
     (* TODO consider adding a joint version of this to spare locks *)
     let stable_prio x = match LHM.find_option data x with
@@ -128,6 +115,40 @@ struct
     let called_prio x = match LHM.find_option data x with
       | Some vd -> vd.called
       | None -> lowest_prio in
+
+    let get_rho x = match LHM.find_option data x with
+      | Some vd -> vd.rho
+      | None -> S.Dom.bot () in
+
+    let set_stable_prio x prio =
+      let old = LHM.find data x in
+      LHM.replace data x {old with stable=prio} in
+
+    let set_called_prio x prio =
+      let old = LHM.find data x in
+      LHM.replace data x {old with called=prio} in
+
+    let set_rho x d =
+      let old = LHM.find data x in
+      LHM.replace data x {old with rho=d} in
+
+
+    let init x =
+      (* Init must be called while holding x lock *)
+      if not (LHM.mem data x) then (
+        new_var_event x;
+        if tracing then trace "init" "initializing %a(%d)" S.Var.pretty_trace x (S.Var.hash x);
+        LHM.replace data x {
+          rho = S.Dom.bot ();
+          called = lowest_prio;
+          stable = lowest_prio;
+        };
+        (* set_rho x (S.Dom.bot ()); *)
+        (* set_called_prio x lowest_prio; *)
+        (* set_stable_prio x lowest_prio; *)
+      )
+    in
+
 
     let eq x (get : S.v -> S.d) set =
       match S.system x with
@@ -162,9 +183,7 @@ struct
             let query (y: S.v): S.d =
               if (not (VS.mem y seen)) then new_work := y :: !new_work;
               LHM.lock y data;
-              let result = match LHM.find_option data y with
-                | Some vd -> vd.rho
-                | None -> S.Dom.bot () in
+              let result = get_rho y in
               LHM.unlock y data;
               result
             in
@@ -200,8 +219,7 @@ struct
             if (all || (prio <= stable_prio y)) && (stable_prio y <> lowest_prio) then (
               if tracing then trace "destab" "%d destabilizing %a from %d" prio S.Var.pretty_trace y (stable_prio y);
               (* TODO this can be improved with Atomic *)
-              let old_value = LHM.find data y in
-              LHM.replace data y {old_value with stable=lowest_prio};
+              set_stable_prio y lowest_prio;
             );
             if tracing then trace "lock" "%d unlocking %a in destab" prio S.Var.pretty_trace y;
             LHM.unlock y data;
@@ -227,8 +245,7 @@ struct
               if S.system y = None then (
                 if tracing then trace "stable" "%d query setting %a stable from %d" prio S.Var.pretty_trace y (stable_prio y);
                 (* TODO this can be improved with Atomic *)
-                let old = LHM.find data y in
-                LHM.replace data y {old with stable=prio};
+                set_stable_prio y prio;
               ) else (
                 if tracing then trace "called" "%d query setting prio from %d to %d for %a" prio (called_prio y) prio S.Var.pretty_trace y;
                 if tracing then trace "own" "%d taking ownership of %a." prio S.Var.pretty_trace y;
@@ -237,8 +254,7 @@ struct
                   if tracing then trace "steal" "steal from: %d %a" (called_prio y) S.Var.pretty_trace y;
                 );
                 (* TODO this can be improved with Atomic *)
-                let old = LHM.find data y in
-                LHM.replace data y {old with called=prio};
+                set_called_prio y prio;
                 if tracing then trace "lock" "%d unlocking %a in query" prio S.Var.pretty_trace y;
                 LHM.unlock y data;
                 (* call iterate unlocked *)
@@ -250,8 +266,7 @@ struct
                   if tracing then trace "own" "%d giving up ownership of %a." prio S.Var.pretty_trace y;
                   if tracing then trace "called" "%d query setting prio back from %d to %d for %a" prio (called_prio y) lowest_prio S.Var.pretty_trace y;
                   (* TODO this can be improved with Atomic *)
-                  let old = LHM.find data y in
-                  LHM.replace data y {old with called=lowest_prio};
+                  set_called_prio y lowest_prio;
                 )
               )
             ) else (
@@ -259,7 +274,7 @@ struct
               HM.replace wpoint y () (* is this correct, we could also just be skipping due to low prio *)
               (* since wpoint is thread local it should be fine either way *)
             );
-            let result = (LHM.find data y).rho in
+            let result = get_rho y in
             if tracing then trace "lock" "%d unlocking %a in query 2" prio S.Var.pretty_trace y;
             LHM.unlock y data;
             add_infl y x;
@@ -282,9 +297,8 @@ struct
             if (called_prio y >= prio) then (
               if tracing then trace "called" "%d side setting prio from %d to %d for %a" prio (called_prio y) prio S.Var.pretty_trace y;
               if tracing then trace "ownSide" "%d side taking ownership of %a. Previously owned by %d" prio S.Var.pretty_trace y (called_prio y);
-              let oldr = LHM.find data y in
-              LHM.replace data y {oldr with called=prio};
-              let old = oldr.rho in
+              set_called_prio y prio;
+              let old = get_rho y in
               (* currently any side-effect after the first one will be widened *)
               let widen a b = 
                 if M.tracing then M.trace "sidew" "%d side widen %a" prio S.Var.pretty_trace y;
@@ -293,8 +307,7 @@ struct
               let tmp = if HM.mem wpoint y then widen old d else S.Dom.join old d in
               if not (S.Dom.leq tmp old) then (
                 if tracing then trace "updateSide" "%d side setting %a(%d) to %a" prio S.Var.pretty_trace y (S.Var.hash y) S.Dom.pretty tmp;
-                let oldr = LHM.find data y in
-                LHM.replace data y {oldr with rho=tmp};
+                set_rho y tmp;
                 if tracing then trace "lock" "%d unlocking %a in side" prio S.Var.pretty_trace y;
                 LHM.unlock y data;
                 if tracing then trace "destab" "%d destabilize called from side to %a" prio S.Var.pretty_trace y;
@@ -322,8 +335,7 @@ struct
           assert (S.system x <> None);
           if not (stable_prio x <= prio) then (
             if tracing then trace "stable" "%d iterate setting %a stable from %d" prio S.Var.pretty_trace x (stable_prio x);
-            let old = LHM.find data x in
-            LHM.replace data x {old with stable=prio};
+            set_stable_prio x prio;
             (* Here we cache LHM.mem wpoint x before eq. If during eq evaluation makes x wpoint, then be still don't apply widening the first time, but just overwrite.
                  It means that the first iteration at wpoint is still precise.
                  This doesn't matter during normal solving (?), because old would be bot.
@@ -336,7 +348,7 @@ struct
             let eqd = eq x (query x) (side x) in
             if tracing then trace "lock" "%d locking %a in iterate 2" prio S.Var.pretty_trace x;
             LHM.lock x data;
-            let old = (LHM.find data x).rho in (* d from older iterate *) (* find old value after eq since wpoint restarting in eq/query might have changed it meanwhile *)
+            let old = get_rho x in (* d from older iterate *) (* find old value after eq since wpoint restarting in eq/query might have changed it meanwhile *)
             let wpd = (* d after box operator (if wp) *)
               if not wp then 
                 eqd
@@ -349,8 +361,9 @@ struct
                 if tracing then trace "sol" "%d Changed" prio;
                 update_var_event x old wpd;
                 if tracing then trace "update" "%d setting %a to %a" prio S.Var.pretty_trace x S.Dom.pretty wpd;
-                let oldr = LHM.find data x in
-                LHM.replace data x {oldr with rho=wpd};
+                (* let oldr = LHM.find data x in *)
+                (* LHM.replace data x {oldr with rho=wpd}; *)
+                set_rho x wpd;
                 if tracing then trace "lock" "%d unlocking %a in iterate 2" prio S.Var.pretty_trace x;
                 LHM.unlock x data;
                 if tracing then trace "destab" "%d destabilize called from iterate of %a" prio S.Var.pretty_trace x;
@@ -414,12 +427,10 @@ struct
                              lock locks the complete variable (even if we consistently
                              use rho, lock is also required for LHM to function properly) *)
           if tracing then trace "lock" "%d locked %a in start_threads" prio S.Var.pretty_trace x;
-          let old = match (LHM.find_option data x) with
-            | Some vd -> vd
-            | None -> {rho=S.Dom.bot (); called=lowest_prio; stable=lowest_prio} in
           if tracing then trace "lock" "%d found old %a in start_threads" prio S.Var.pretty_trace x;
           (* // TODO this should be safe *)
-          LHM.replace data x {old with called=prio};
+          (* LHM.replace data x {old with called=prio}; *)
+          set_called_prio x prio;
           if tracing then trace "start" "Thread %d really started at %a" thread_id S.Var.pretty_trace x;
           if tracing then trace "lock" "%d unlocking %a in start_threads" prio S.Var.pretty_trace x;
           LHM.unlock x data;
@@ -446,8 +457,10 @@ struct
 
     let set_start (x,d) =
       init x;
-      let oldr = LHM.find data x in
-      LHM.replace data x {oldr with rho=d; stable=highest_prio};
+      (* let oldr = LHM.find data  in *)
+      (* LHM.replace data x {oldr with rho=d}; *)
+      set_rho x d;
+      set_stable_prio x highest_prio;
     (* iterate x Widen *)
     in
 
@@ -470,6 +483,7 @@ struct
         if (!lower_in_search_phase) then (Atomic.incr nr_search) else (Atomic.incr nr_work)
       done in
       let solver_start_time = Unix.gettimeofday () in
+      let nr_threads = 1 in
       let threads = Array.init nr_threads (fun j -> 
         Domain.spawn (fun () ->
           (* Processor.Affinity.set_cpus (Processor.Cpu.from_core (8+j) Processor.Topology.t); *)
@@ -495,9 +509,10 @@ struct
     let i = ref 0 in
     let rec solver () = (* as while loop in paper *)
       incr i;
-      let unstable_vs = List.filter (neg (fun x -> (match LHM.find_option data x with 
-        | Some vd -> vd.stable
-        | None -> lowest_prio) < lowest_prio)) vs in
+      (* let unstable_vs = List.filter (neg (fun x -> (match LHM.find_option data x with  *)
+        (* | Some vd -> vd.stable *)
+        (* | None -> lowest_prio) < lowest_prio)) vs in *)
+      let unstable_vs = List.filter (fun x -> (stable_prio x) < lowest_prio) vs in
       if unstable_vs <> [] then (
         if Logs.Level.should_log Debug then (
           if !i = 1 then Logs.newline ();
