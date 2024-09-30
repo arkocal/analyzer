@@ -2,7 +2,7 @@
 
 (** Top down solver that is parallelized. TODO: better description *)
 (* Options:
- * - solvers.td3.parallel_domains (default: 2): Maximal number of Domains that the thread-pool of the solver can use in parallel.
+ * - solvers.td3.parallel_domains (default: 0 - automatic selection): Maximal number of Domains that the thread-pool of the solver can use in parallel.
  * TODO: support 'solvers.td3.remove-wpoint' option? currently it acts as if this option was always enabled *)
 
 open Batteries
@@ -239,9 +239,9 @@ module Base : GenericCreatingEqSolver =
           in
 
           (* begining of iterate*)
+          assert (S.system x <> None);
           if tracing then trace "sol2" "iterate %a, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (HM.mem called x) (HM.mem stable x) (HM.mem wpoint x);
           init rho x;
-          assert (S.system x <> None);
           let wp = HM.mem wpoint x in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
           let eqd = eq x (query x) (side x) (create x) in
           obs := Sides.process_updates job_id !obs handle_side;
