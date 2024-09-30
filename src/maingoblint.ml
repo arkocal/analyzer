@@ -168,7 +168,6 @@ let check_arguments () =
     Logs.info "The constraint system will be solved with a parallelized solver.";
     (* all parallel solvers unsupported *)
     if get_int "solvers.td3.parallel_domains" < 0 then fail "solvers.td3.parallel_domains cannot be negative.";
-    if get_bool "allfuns" || get_bool "nonstatic" then fail "Parallel solvers cannot solve for multiple variables. Thus they are incompatible with 'allfuns' and 'nonstatic'.";
     if get_bool "ana.opt.hashcons" then (set_bool "ana.opt.hashcons" false; warn "Hashconsing is disabled when using a parallelized solver!");
     if get_bool "solvers.td3.term" then warn "Parallelized solvers do not support widening and narrowing phases implied by 'solvers.td3.term'";
     if get_bool "solvers.td3.space" then warn "Option 'solvers.td3.space' is not supported for parallelized solvers and will be ignored.";
@@ -176,6 +175,7 @@ let check_arguments () =
     if get_bool "solvers.td3.verify" then warn "Option 'solvers.td3.verify' is not supported for parallelized solvers and will be ignored.";
     if get_bool "solvers.td3.restart.wpoint.enabled" then warn "Restarting wpoints is not supported parallelized solvers. Corresponding options will be ignored.";
     if get_string "solvers.td3.side_widen" <> "always" then warn "Parallelized solvers only support always widening for sides. Differing options for side widening are ignored.";
+    if get_string "solver" = "td_parallel_stealing" && (get_bool "allfuns" || get_bool "nonstatic") then fail "The solver td_parallel_stealing cannot solve for multiple variables. Thus they are incompatible with 'allfuns' and 'nonstatic'.";
   );
   if List.mem "termination" @@ get_string_list "ana.activated" then (
     if GobConfig.get_bool "incremental.load" || GobConfig.get_bool "incremental.save" then fail "termination analysis is not compatible with incremental analysis";

@@ -2490,6 +2490,12 @@
               "description": "Maximal number of Domains that the solver can use in parallel. If 0, then number of cores is used. Only applies, when a solver of the 'td_parallel_*' family is used.",
               "type": "integer",
               "default": 0
+            },
+            "LHM_size" : {
+              "title": "solvers.td3.LHM_size",
+              "description": "Number of buckets used for the Lockable Hash Map used in parallel solvers",
+              "type": "integer",
+              "default": 1000
             }
           },
           "additionalProperties": false
