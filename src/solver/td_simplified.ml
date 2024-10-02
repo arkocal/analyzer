@@ -8,8 +8,6 @@ open Batteries
 open ConstrSys
 open Messages
 
-open Parallel_util
-
 module M = Messages
 
 module Base : GenericEqSolver =
