@@ -57,7 +57,8 @@ module Base : GenericEqSolver =
       let nr_threads = GobConfig.get_int "solvers.td3.parallel_domains" in
       let nr_threads = if nr_threads = 0 then (Cpu.numcores ()) else nr_threads in
       let highest_prio = 0 in 
-      let lowest_prio = highest_prio + nr_threads + 1 in
+      let lowest_prio = nr_threads in
+      let main_finished = Atomic.make false in
       let default () = {value = S.Dom.bot (); called = lowest_prio; stable = lowest_prio} in
 
       let data = create_empty_solver_data () in
@@ -81,7 +82,52 @@ module Base : GenericEqSolver =
         | Some f -> f get set
       in
 
-      let solve_thread x prio =
+      let rec solve_thread x prio = 
+
+      let rec find_work (worklist: S.v list) (seen: VS.t) = 
+        match worklist, prio with
+        | [], _ -> None
+        | x :: xs, 0 -> Some x
+        | x :: xs, _ ->
+          if tracing then trace "search" "%d searching for work %a" prio S.Var.pretty_trace x;
+          LHM.lock x data;
+          let xr = LHM.find_default data x {
+            called = lowest_prio;
+            value = S.Dom.bot ();
+            stable = lowest_prio;
+          } in
+          let called_prio = xr.called in
+          let stable_prio = xr.stable in
+          LHM.unlock x data;
+          let maybe_eq = S.system x in
+          if (prio < called_prio && prio < stable_prio && Option.is_some maybe_eq) then (
+            if tracing then trace "work" "%d found work %a" prio S.Var.pretty_trace x;
+            Some x
+          )
+          else (
+            let new_work = ref [] in
+            let query (y: S.v): S.d =
+              if (not (VS.mem y seen)) then new_work := y :: !new_work;
+              LHM.lock y data;
+              let s = LHM.find_default data y {
+                called = lowest_prio;
+                value = S.Dom.bot ();
+                stable = lowest_prio;
+              } in
+              LHM.unlock y data;
+              s.value
+            in
+            let side _ _ = () in
+            ignore @@ Option.map (fun eq -> eq query side) maybe_eq; 
+              (* eq x query side; *)
+            if Atomic.get main_finished then None else (
+              (* Introduce some randomness to prevent getting caught in unproductive sectors *)
+              let next_work = if (Random.bool ()) then (xs @ !new_work) else (!new_work @ xs) in
+              find_work next_work (VS.add_seq (Seq.of_list !new_work) seen))
+          )
+      in 
+
+      let do_work x =
         let t_data = create_empty_thread_data () in
         let wpoint = t_data.wpoint in
         let infl = t_data.infl in
@@ -227,7 +273,31 @@ module Base : GenericEqSolver =
             LHM.unlock x data;
           )
         in
-        iterate x
+      iterate x 
+      in
+
+      let to_iterate = find_work [ x ] VS.empty in
+      begin match to_iterate with
+        | Some x -> begin 
+          LHM.lock x data;
+          let s = LHM.find_default data x {
+            called = lowest_prio;
+            value = S.Dom.bot ();
+            stable = lowest_prio;
+          } in
+          if prio < s.called then LHM.replace data x {s with called = prio};
+          LHM.unlock x data;
+          do_work x
+          end
+        | None -> () end;
+      if (prio > highest_prio) then ( 
+        if (not @@ Atomic.get main_finished) then (
+          (solve_thread[@tailcall]) x prio
+        )
+      )
+      else (
+        Atomic.set main_finished true;
+      )
       in
 
       let set_start (x,d) =
