@@ -61,7 +61,8 @@ struct
 
   let print_stats lhm =
     Logs.newline ();
-    Logs.info "LHM info: Buckets = %d    Max = %d   Mean = %f    SD = %f" (Array.length lhm) (max_bucket lhm) (mean_bucket lhm) (sd_bucket lhm);
+    let empty = Array.count_matching (fun (_, hm) ->  HM.is_empty hm) lhm in
+    Logs.info "LHM info: Buckets = %d    Empty = %d   Max = %d   Mean = %f    SD = %f" (Array.length lhm) empty (max_bucket lhm) (mean_bucket lhm) (sd_bucket lhm);
     Logs.newline ();
     flush_all ()
 end 
