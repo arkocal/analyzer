@@ -2496,6 +2496,12 @@
               "description": "Number of buckets used for the Lockable Hash Map used in parallel solvers",
               "type": "integer",
               "default": 1000
+            },
+            "stealing_revival" : {
+              "title": "solvers.td3.stealing_revival",
+              "description": "TODO: remove before goblint/analyzer merge. Should always be active! Allow td_parallel_stealing to use revival for finished domains",
+              "type": "boolean",
+              "default": true
             }
           },
           "additionalProperties": false
