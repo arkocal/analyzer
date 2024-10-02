@@ -17,6 +17,161 @@ let lowest_prio = 10
 let highest_prio = 0
 let map_size = 1000
 
+(* module CreateOnlyConcurrentMap (H:Hashtbl.HashedType) = struct *)
+module CreateOnlyConcurrentMap (H:Hashtbl.HashedType) = struct
+ (* TODO handle hash collisions *)
+  type node = {
+    left: (node option) Atomic.t;
+    right: (node option) Atomic.t;
+    (* Root does not have a key, so option. Probably there is a better way to do this. *)
+    key: H.t option;
+    keyval: int;
+    value: int Atomic.t;
+  }
+
+  type t = (node option) Atomic.t
+  
+  module IntHashtbl = Hashtbl.Make (
+    struct
+      type t = int
+      let equal = (=)
+      let hash = Hashtbl.hash
+    end
+  )
+
+  let create_default_node keyval key = 
+    (* assert (not (IntHashtbl.mem seen_keys key)); *)
+    (* IntHashtbl.add seen_keys key (); *)
+    {  
+    left = Atomic.make None;
+    right = Atomic.make None;
+    key = key;
+    keyval = keyval;
+    (* Default value is stabilty lowest_prio, called lowest_prio *)
+    value = Atomic.make lowest_prio (* (lowest_prio + (lowest_prio lsl 8)); *)
+  }
+
+  let find_option (key: H.t) node =
+    let rec find_option' keyval node =
+      match node with
+      | None -> None
+      | Some node' ->
+        if keyval = node'.keyval then
+          Some node'
+        else if keyval < node'.keyval then
+          find_option' keyval (Atomic.get node'.left)
+        else
+          find_option' keyval (Atomic.get node'.right)
+    in
+    match find_option' (H.hash key) node with
+    | None -> None
+    | Some node' -> 
+      assert (node'.key = Some key);
+      Some (Atomic.get node'.value)
+    
+
+  let success_counter = Atomic.make 0
+
+  let to_list node =
+    let rec to_list' node acc =
+      match node with
+      | None -> acc
+      | Some node' ->
+        let acc = to_list' (Atomic.get node'.left) acc in
+        let acc = (node'.keyval, Atomic.get node'.value) :: acc in
+        to_list' (Atomic.get node'.right) acc
+    in
+    to_list' node []
+
+
+  let find_default_creating (key : H.t) node =
+    let rec find_default_creating' key' node =
+      match node with
+      | None -> assert false
+      | Some node' ->
+        if key' = node'.keyval then (
+          Logs.info "Found here %d" key';
+          match node'.key with
+          | None -> assert false
+          | Some nodekey -> Logs.info "Found here some key with hash %d" (H.hash nodekey);
+          ;
+          node')
+        else if key' < node'.keyval then
+          (match Atomic.get node'.left with
+            | None ->
+              Logs.info "Creating left node for %d" key';
+              let success = Atomic.compare_and_set node'.left None (Some (create_default_node key' @@ Some key)) in
+              if success then Atomic.incr success_counter;
+              assert success;
+              find_default_creating' key' @@ Atomic.get node'.left
+            | Some left -> find_default_creating' key' (Some left)
+          )
+        else (
+          match Atomic.get node'.right with
+          | None ->
+            Logs.info "Creating right node for %d" key';
+            let success = Atomic.compare_and_set node'.right None (Some (create_default_node key' @@ Some key)) in
+            if success then Atomic.incr success_counter;
+            assert success;
+            Logs.info "Created right node for %d" key';
+            find_default_creating' key' @@ Atomic.get node'.right
+          | Some right -> find_default_creating' key' (Some right) 
+        ) in
+    let curr_size = List.length (to_list node) in
+    Logs.info "Current size: %d" curr_size;
+    Logs.info "Finding default creating for %d" (H.hash key);
+    let res_node = (find_default_creating' (H.hash key) node) in
+    let curr_size = List.length (to_list node) in
+    Logs.info "Current size after find: %d" curr_size;
+    match res_node.key with
+    | None -> assert false
+    | Some nodekey -> (
+      Logs.info "Found here again some key with hash %d" (H.hash nodekey);
+      assert (H.equal nodekey key);
+      Logs.info "Assert equal success";
+    );
+    res_node.value
+
+  let create () = Some {
+    left = Atomic.make None;
+    right = Atomic.make None;
+    key = None;
+    keyval = 0;
+    value = Atomic.make 0;
+  }
+
+
+end
+
+(* Lower 8 bits are called *)
+(* Higher 8 bits are stable *)
+(* let get_called' atomic = (Atomic.get atomic) mod 256 *)
+(* let get_stable' atomic = (Atomic.get atomic) / 256 *)
+(* let set_called' atomic called = Atomic.set atomic (get_stable atomic * 256 + called) *)
+(* let set_stable' atomic stable = Atomic.set atomic (stable * 256 + get_called atomic) *)
+(* let compare_and_set_called atomic old called = Atomic.compare_and_set atomic old ((get_stable atomic) lsl 8 + called) *)
+(* let compare_and_set_stable atomic old stable = Atomic.compare_and_set atomic old (stable lsl 8 + (get_called atomic)) *)
+
+module HashAnalyser (H:Hashtbl.HashedType) = struct
+  type t = H.t
+
+  module IntMap = Map.Make (
+    struct
+      type t = int
+      let compare = compare
+    end
+  )
+
+  let ftest x = Int32.to_int @@ Random.int32 Int32.max_int
+
+  let count_from_seq seq =
+    Seq.fold_left (fun counts x ->
+      let key = ftest x in
+      let count = IntMap.find_default 0 key counts in
+      IntMap.add key (count + 1) counts
+    ) (IntMap.empty) seq
+end
+
 module M = Messages
 
 module Base : GenericEqSolver =
@@ -27,6 +182,8 @@ struct
   include Generic.SolverStats (S) (HM)
   module VS = Set.Make (S.Var)
   module LHM = LockableHashtbl (S.Var) (HM)
+  module CHM = CreateOnlyConcurrentMap (S.Var)
+  module HashA = HashAnalyser (S.Var)
   module Int_tbl = Hashtbl.Make (
   struct
     type t = int
@@ -82,8 +239,9 @@ struct
     let nr_threads = GobConfig.get_int "solvers.td3.parallel_domains" in
     let lower_in_search_phase = ref true in
 
-    let data = create_empty_solver_data ()
-    in
+    let data = create_empty_solver_data () in
+    let stable = CHM.create () in
+    let called = CHM.create () in
 
     let iterate_counter = PLHM.create 10 in
 
@@ -106,15 +264,39 @@ struct
       (* print_context_stats @@ LHM.to_hashtbl rho *)
     in
 
+    let called_map = HM.create 10 in
+    (* let called_mutex = Mutex.create () in *)
     (* returns the current called/stable prio value of x. returns lowest_prio if not present *)
     (* TODO consider adding a joint version of this to spare locks *)
     let stable_prio x = match LHM.find_option data x with
       | Some vd -> vd.stable
       | None -> lowest_prio in
 
+    (* let stable_prio x =  *)
+      (* let result = *)
+      (* let atomic = CHM.find_default_creating x stable in *)
+      (* Atomic.get atomic *)
+      (* in *)
+(* let old = stable_prio' x in *)
+      (* Logs.info "Stable prio for %a: %d -> %d" S.Var.pretty_trace x old result; *)
+      (* assert (result = stable_prio' x); *)
+      (* result *)
+    (* in *)
+
+
     let called_prio x = match LHM.find_option data x with
       | Some vd -> vd.called
       | None -> lowest_prio in
+    (* let called_prio x =  *)
+    (*   let result =  *)
+    (*     let atomic = CHM.find_default_creating x called in *)
+    (*     Atomic.get atomic *)
+    (*   in *)
+    (*   let old = HM.find_default called_map x lowest_prio in *)
+    (*   Logs.info "PRIO %a Called prio for: %d -> %d" S.Var.pretty_trace x old result; *)
+    (*   assert (result = old); *)
+    (*   result *)
+    (* in *)
 
     let get_rho x = match LHM.find_option data x with
       | Some vd -> vd.rho
@@ -123,10 +305,24 @@ struct
     let set_stable_prio x prio =
       let old = LHM.find data x in
       LHM.replace data x {old with stable=prio} in
+    (* let set_stable_prio x prio = *)
+    (*   let old = LHM.find data x in *)
+    (*   LHM.replace data x {old with stable=prio}; *)
+    (*   let atomic = CHM.find_default_creating x stable in *)
+    (*   Atomic.set atomic prio *)
+    (* in *)
+
 
     let set_called_prio x prio =
       let old = LHM.find data x in
       LHM.replace data x {old with called=prio} in
+    (* let set_called_prio x prio = *)
+    (*   Logs.info "PRIO %a Set Called prio for: %d" S.Var.pretty_trace x prio; *)
+    (*   let atomic = CHM.find_default_creating x called in *)
+    (*   Atomic.set atomic prio; *)
+    (*   set_called_prio' x prio; *)
+    (*   HM.replace called_map x prio *)
+    (* in *)
 
     let set_rho x d =
       let old = LHM.find data x in
@@ -143,9 +339,9 @@ struct
           called = lowest_prio;
           stable = lowest_prio;
         };
-        (* set_rho x (S.Dom.bot ()); *)
-        (* set_called_prio x lowest_prio; *)
-        (* set_stable_prio x lowest_prio; *)
+        set_stable_prio x lowest_prio;
+        set_called_prio x lowest_prio;
+        set_rho x (S.Dom.bot ());
       )
     in
 
@@ -461,6 +657,7 @@ struct
       (* LHM.replace data x {oldr with rho=d}; *)
       set_rho x d;
       set_stable_prio x highest_prio;
+      set_called_prio x highest_prio;
     (* iterate x Widen *)
     in
 
@@ -497,7 +694,24 @@ struct
       if tracing then trace "stime" "Nr restarts %d" (Atomic.get nr_restarts);
       !print_solver_stats ();
       Logs.info "Solver time: %f" (Unix.gettimeofday () -. solver_start_time);
-    in
+      let data_as_hm = LHM.to_hashtbl data in
+      let keys = HM.to_list data_as_hm in 
+      let key_seq = Seq.of_list (List.map fst keys) in 
+      let stats = HashA.count_from_seq key_seq in
+      let collisons_as_list = HashA.IntMap.to_list stats in
+      let count_and_value = List.map (fun (k, v) -> (v, k)) collisons_as_list in
+      let sorted = List.sort compare count_and_value in
+      let average = float_of_int (List.fold_left (fun acc (k, v) -> acc + k) 0 count_and_value) /. float_of_int (List.length count_and_value) in
+      List.iter (fun (k, v) -> if tracing then trace "coll" "Collisions %d: %d" v k) sorted;
+      if tracing then trace "coll" "Average: %f" average;
+      (* let interesting = 4212121509371740294 in *)
+      (* let interesting = 4212121484873083327 in *)
+      let interesting = 19163682886717 in
+      (* HM.iter (fun k v -> if S.Var.hash k = 3432372892748764993 then *)
+      HM.iter (fun k v -> if S.Var.hash k = interesting then
+        trace "coll" "Hash interesting has %a" S.Var.pretty_trace k) (data_as_hm);
+      ()
+in
 
     (* Imperative part starts here*)
     start_event ();
@@ -512,7 +726,7 @@ struct
       (* let unstable_vs = List.filter (neg (fun x -> (match LHM.find_option data x with  *)
         (* | Some vd -> vd.stable *)
         (* | None -> lowest_prio) < lowest_prio)) vs in *)
-      let unstable_vs = List.filter (fun x -> (stable_prio x) < lowest_prio) vs in
+      let unstable_vs = List.filter (fun x -> (stable_prio x) > highest_prio) vs in
       if unstable_vs <> [] then (
         if Logs.Level.should_log Debug then (
           if !i = 1 then Logs.newline ();

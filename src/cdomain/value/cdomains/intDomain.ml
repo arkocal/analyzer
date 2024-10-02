@@ -3677,6 +3677,7 @@ module IntDomTupleImpl = struct
            |> to_list
            |> String.concat "; "
   let to_yojson = [%to_yojson: Yojson.Safe.t list] % to_list % mapp { fp = fun (type a) (module I:SOverflow with type t = a) x -> I.to_yojson x }
+  let hash = Hashtbl.hash
 
   (* `map/opt_map` are used by `project` *)
   let opt_map b f =
