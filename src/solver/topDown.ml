@@ -5,6 +5,26 @@ open Batteries
 open ConstrSys
 open Messages
 
+module HashCounter (H:Hashtbl.HashedType) = struct
+  type t = H.t
+
+  module IntMap = Map.Make (
+    struct
+      type t = int
+      let compare = compare
+    end
+  )
+
+  let ftest x = H.hash x
+
+  let count_from_seq seq =
+    Seq.fold_left (fun counts x ->
+      let key = ftest x in
+      let count = IntMap.find_default 0 key counts in
+      IntMap.add key (count + 1) counts
+    ) (IntMap.empty) seq
+end
+
 module WP =
   functor (S:EqConstrSys) ->
   functor (HM:Hashtbl.S with type key = S.v) ->
@@ -13,6 +33,7 @@ module WP =
 
     include Generic.SolverStats (S) (HM)
     module VS = Set.Make (S.Var)
+    module HC = HashCounter (S.Var)
 
     module P =
     struct
@@ -148,6 +169,17 @@ module WP =
       HM.clear infl  ;
       HM.clear set   ;
       HPM.clear rho'  ;
+
+      let key_seq = HM.to_list rho |> List.map fst |> Seq.of_list in
+      let hash_counts = HC.count_from_seq key_seq in
+      let count_and_hash = HC.IntMap.to_list hash_counts |> List.map (fun (k, v) -> (v, k)) in
+      let sorted = List.sort compare count_and_hash in
+      let average = float_of_int (List.fold_left (fun acc (k, v) -> acc + k) 0 count_and_hash) /. float_of_int (List.length count_and_hash) in
+      List.iter (fun (k, v) -> if tracing then trace "coll" "%d keys with hash %d" k v) sorted;
+      if tracing then trace "coll" "Average keys per hash: %f" average;
+      (* HM.iter (fun k v -> if S.Var.hash k = interesting then *)
+        (* trace "coll" "Colliding variable %a" S.Var.pretty_trace k) (data_as_hm); *)
+      (* () *)
 
       rho
 
