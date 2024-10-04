@@ -36,7 +36,7 @@ doc: "https://goblint.readthedocs.io/en/latest/"
 bug-reports: "https://github.com/goblint/analyzer/issues"
 depends: [
   "dune" {>= "3.7"}
-  "ocaml" {>= "4.14"}
+  "ocaml" {>= "5.2.0"}
   "goblint-cil" {>= "2.0.4"}
   "batteries" {>= "3.5.1"}
   "zarith" {>= "1.10"}
@@ -66,6 +66,7 @@ depends: [
   "conf-ruby" {with-test}
   "benchmark" {with-test}
   "conf-gcc"
+  "domain-local-await"
   "domainslib" {= "0.5.0"}
 ]
 depopts: [
@@ -103,7 +104,7 @@ depexts: [
   ["libgraph-easy-perl"] {os-distribution = "ubuntu" & with-test}
 ]
 post-messages: [
-  "Do not benchmark Goblint on OCaml 5 (https://goblint.readthedocs.io/en/latest/user-guide/benchmarking/)." {ocaml:version >= "5.0.0"}
+  "Do not benchmark Goblint on OCaml 5 (https://goblint.readthedocs.io/en/latest/user-guide/benchmarking/)." {ocaml:version >= "5.2.0"}
 ]
 x-ci-accept-failures: [
   "macos-homebrew" # newer MacOS headers cannot be parsed (https://github.com/ocaml/opam-repository/pull/26307#issuecomment-2258080206)
