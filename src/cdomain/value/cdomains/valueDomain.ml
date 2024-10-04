@@ -552,9 +552,12 @@ struct
       if Messages.tracing then Messages.tracel "cast" "cast %a from %s to %a is %a!" pretty v s_torg d_type t pretty v';
       v'
 
+  let warn_mutex = GobMutex.create ()
 
   let warn_type op x y =
-    Logs.debug "warn_type %s: incomparable abstr. values %a and %a at %a: %a and %a" op pretty_tag x pretty_tag y CilType.Location.pretty !Goblint_tracing.current_loc pretty x pretty y
+    GobMutex.lock warn_mutex;
+    Logs.debug "warn_type %s: incomparable abstr. values %a and %a at %a: %a and %a" op pretty_tag x pretty_tag y CilType.Location.pretty !Goblint_tracing.current_loc pretty x pretty y;
+    GobMutex.unlock warn_mutex
 
   let rec leq x y =
     match (x,y) with
