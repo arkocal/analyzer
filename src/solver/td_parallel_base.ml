@@ -49,13 +49,14 @@ module Base : GenericCreatingEqSolver =
         print_data data
       )
 
-    let job_id_counter = (Atomic.make 10)
+    let job_id_counter = (Atomic.make 1)
 
     let solve st vs =
-      let nr_threads = GobConfig.get_int "solvers.td3.parallel_domains" in
-      let nr_threads = if nr_threads = 0 then (Cpu.numcores ()) else nr_threads in
+      let nr_domains = GobConfig.get_int "solvers.td3.parallel_domains" in
+      let nr_domains = if nr_domains = 0 then (Domain.recommended_domain_count ()) else nr_domains in
 
-      let pool = Thread_pool.create nr_threads in
+      (* domain with id 0 is always working. Threadpool initialized with n means domain 0 + n additional domains are working *)
+      let pool = Thread_pool.create (nr_domains - 1) in
 
       let data = create_empty_data ()
       in
@@ -201,7 +202,6 @@ module Base : GenericCreatingEqSolver =
         if tracing then trace "iter" "%d iterate %a, stable: %b, wpoint: %b" job_id S.Var.pretty_trace x s.stable s.wpoint;
         let wp = s.wpoint in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
         LHM.unlock x data;
-        if tracing then trace "eq" "eval eq for %a" S.Var.pretty_trace x;
         let eqd = eq x (query x) (side x) (create x) in
         LHM.lock x data;
         let s = LHM.find data x in

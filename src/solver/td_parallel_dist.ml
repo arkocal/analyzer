@@ -114,10 +114,11 @@ module Base : GenericCreatingEqSolver =
       )
 
     let solve st vs =
-      let nr_threads = GobConfig.get_int "solvers.td3.parallel_domains" in
-      let nr_threads = if nr_threads = 0 then (Cpu.numcores ()) else nr_threads in
+      let nr_domains = GobConfig.get_int "solvers.td3.parallel_domains" in
+      let nr_domains = if nr_domains = 0 then (Domain.recommended_domain_count ()) else nr_domains in
 
-      let pool = Thread_pool.create nr_threads in
+      (* domain with id 0 is always working. Threadpool initialized with n means domain 0 + n additional domains are working *)
+      let pool = Thread_pool.create (nr_domains - 1) in
 
       let promises = ref [] in
       let prom_mutex = GobMutex.create () in
@@ -125,7 +126,7 @@ module Base : GenericCreatingEqSolver =
       let created_vars = HM.create 10 in
       let suspended_vars = ref [] in
 
-      let job_id_counter = (Atomic.make 10) in
+      let job_id_counter = (Atomic.make 1) in
 
       (* TODO: make something reasonable out of this
          let () = print_solver_stats := fun () ->
@@ -156,7 +157,6 @@ module Base : GenericCreatingEqSolver =
 
       (** solves for a single point-of-interest variable (x_poi) *)
       let rec solve_single is_primary x_poi sd job_id =
-
         let obs = sd.obs in
         let stable = sd.stable in
         let called = sd.called in
@@ -315,7 +315,7 @@ module Base : GenericCreatingEqSolver =
         let rec wait () =
           let suspend () =
             GobMutex.lock prom_mutex;
-            if tracing then trace "suspend" "suspending job %d solving for %a" job_id S.Var.pretty_trace x_poi;
+            if tracing then trace "suspend" "suspending job %d solving for %a (suspended_vars: %d)" job_id S.Var.pretty_trace x_poi (List.length !suspended_vars);
             suspended_vars := (is_primary, x_poi, sd, job_id)::!suspended_vars;
             GobMutex.unlock prom_mutex
           in
@@ -359,7 +359,17 @@ module Base : GenericCreatingEqSolver =
               Domainslib.Task.run pool (fun () -> 
                   let first_id = Atomic.fetch_and_add job_id_counter 1 in
                   solve_single true x start_data first_id; 
-                  Thread_pool.await_all pool (!promises)
+                  (* make sure, everything is awaited, since promises could change during await_all *)
+                  let rec await_changing_list () = 
+                    GobMutex.lock prom_mutex;
+                    let current_proms = !promises in
+                    promises := [];
+                    GobMutex.unlock prom_mutex;
+                    Thread_pool.await_all pool current_proms;
+                    if List.length !promises <> 0 then await_changing_list ()
+                  in
+                  await_changing_list ();
+                  if tracing then trace "dbg_para" "promises: %d" (List.length !promises)
                 )
             ) unstable_vs;
           solver ();
@@ -382,7 +392,9 @@ module Base : GenericCreatingEqSolver =
         );*)
 
       (* TODO: make a better merge here*)
+      if tracing then trace "dbg_para" "suspended_vars: %d" (List.length !suspended_vars);
       let final_rho = List.fold (fun acc (_,_,sd,job_id) -> 
+          if tracing then trace "dbg_para" "merging rho from job %d" job_id;
           HM.merge (
             fun k ao bo -> 
               match ao, bo with

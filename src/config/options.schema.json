@@ -2487,7 +2487,7 @@
             },
             "parallel_domains" : {
               "title": "solvers.td3.parallel_domains",
-              "description": "Maximal number of Domains that the solver can use in parallel. If 0, then number of cores is used. Only applies, when a solver of the 'td_parallel_*' family is used.",
+              "description": "Maximal number of Domains that the solver can use in parallel. If 0, then the number of domains is determined automatically. Only applies, when a solver of the 'td_parallel_*' family is used.",
               "type": "integer",
               "default": 0
             },
