@@ -75,6 +75,7 @@ module Base : GenericEqSolver =
       in
 
       let eq x get set =
+        if tracing then trace "eq" "eq %a" S.Var.pretty_trace x;
         match S.system x with
         | None -> S.Dom.bot ()
         | Some f -> f get set
@@ -120,8 +121,7 @@ module Base : GenericEqSolver =
           init y;
           let widen a b =
             if M.tracing then M.trace "sidew" "side widen %a" S.Var.pretty_trace y;
-            let r = S.Dom.widen a (S.Dom.join a b) in
-            r
+            S.Dom.widen a (S.Dom.join a b)
           in
           let op a b = if HM.mem wpoint y then widen a b else S.Dom.join a b
           in

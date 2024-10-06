@@ -176,7 +176,7 @@ let check_arguments () =
     if get_bool "solvers.td3.verify" then warn "Option 'solvers.td3.verify' is not supported for parallelized solvers and will be ignored.";
     if get_bool "solvers.td3.restart.wpoint.enabled" then warn "Restarting wpoints is not supported parallelized solvers. Corresponding options will be ignored.";
     if get_string "solvers.td3.side_widen" <> "always" then warn "Parallelized solvers only support always widening for sides. Differing options for side widening are ignored.";
-    if get_string "solver" = "td_parallel_stealing" && (get_bool "allfuns" || get_bool "nonstatic") then fail "The solver td_parallel_stealing cannot solve for multiple variables. Thus they are incompatible with 'allfuns' and 'nonstatic'.";
+    if get_string "solver" = "td_parallel_stealing" && (get_bool "allfuns" || get_bool "nonstatic") then fail "The solver td_parallel_stealing cannot solve for multiple variables. Thus it is incompatible with 'allfuns' and 'nonstatic'.";
   );
   if List.mem "termination" @@ get_string_list "ana.activated" then (
     if GobConfig.get_bool "incremental.load" || GobConfig.get_bool "incremental.save" then fail "termination analysis is not compatible with incremental analysis";

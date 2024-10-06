@@ -55,10 +55,10 @@ module Base : GenericEqSolver =
 
     let solve st vs =
       let stealing_revival = GobConfig.get_bool "solvers.td3.stealing_revival" in
-      let nr_threads = GobConfig.get_int "solvers.td3.parallel_domains" in
-      let nr_threads = if nr_threads = 0 then (Cpu.numcores ()) else nr_threads in
+      let nr_domains = GobConfig.get_int "solvers.td3.parallel_domains" in
+      let nr_domains = if nr_domains = 0 then (Domain.recommended_domain_count ()) else nr_domains in
       let highest_prio = 0 in 
-      let lowest_prio = nr_threads in
+      let lowest_prio = nr_domains in
       let main_finished = Atomic.make false in
       let default () = {value = S.Dom.bot (); called = lowest_prio; stable = lowest_prio} in
 
@@ -313,8 +313,8 @@ module Base : GenericEqSolver =
 
       let start_threads x =
         (* threads are created with a distinct prio, so that for all threads it holds: lowest_prio > prio >= highest_prio. highest_prio is the main thread. *)
-        assert (nr_threads > 0);
-        let threads = Array.init nr_threads (fun j ->
+        assert (nr_domains > 0);
+        let threads = Array.init nr_domains (fun j ->
             Domain.spawn (fun () -> 
                 if Logs.Level.should_log Debug then Printexc.record_backtrace true;
                 Unix.sleepf (Float.mul (float j) 0.25);
