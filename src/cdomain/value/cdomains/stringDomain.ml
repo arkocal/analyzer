@@ -25,7 +25,8 @@ let hash x =
   if get_string_domain () = Disjoint then
     hash x
   else
-    13859
+    (* 13859 *)
+    hash x
 
 let show = function
   | Some x -> "\"" ^ x ^ "\""

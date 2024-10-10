@@ -20,16 +20,6 @@ module Base : GenericEqSolver =
     open SolverBox.Warrow (S.Dom)
     include Generic.SolverStats (S) (HM)
     module VS = Set.Make (S.Var)
-    module LHM = LockableHashtbl (S.Var) (HM)
-
-    (* module DefaultInt = struct  *)
-    (*   type t = int  *)
-    (*   let default () = 0 *)
-    (*   let equal = (=) *)
-    (*   let hash x = x mod 7 *)
-    (* end *)
-
-    (* module C = CreateOnlyConcurrentMap (DefaultInt) (DefaultInt)  *)
 
     type state = {
       value: S.Dom.t;
@@ -37,22 +27,26 @@ module Base : GenericEqSolver =
       stable: int;
     }
 
+    module DefaultState = struct
+    type t = state
+    let default () = {value = S.Dom.bot (); called = Int.max_num; stable = Int.max_num} 
+    end
+
+    module CM = CreateOnlyConcurrentMap (S.Var) (DefaultState) (HM)
+
     type thread_data = {
       wpoint: unit HM.t;
       infl: VS.t HM.t;
     } 
 
-    let create_empty_solver_data () =
-      let map_size = GobConfig.get_int "solvers.td3.LHM_size" in
-      LHM.create map_size
+    let create_empty_solver_data () = CM.create ()
 
     let create_empty_thread_data () = {
       wpoint = HM.create 10;
       infl = HM.create 10;
     }
 
-    let print_data data =
-      Logs.debug "|rho|=%d" (LHM.length data)
+    let print_data data = Logs.debug "Print data called"
     (*Logs.debug "|called|=%d" (LHM.length data.called);
       Logs.debug "|stable|=%d" (LHM.length data.stable)*)
 
@@ -67,9 +61,9 @@ module Base : GenericEqSolver =
       let nr_domains = GobConfig.get_int "solvers.td3.parallel_domains" in
       let nr_domains = if nr_domains = 0 then (Domain.recommended_domain_count ()) else nr_domains in
       let highest_prio = 0 in 
-      let lowest_prio = nr_domains in
+      let lowest_prio = Int.max_num in
       let main_finished = Atomic.make false in
-      let default () = {value = S.Dom.bot (); called = lowest_prio; stable = lowest_prio} in
+      (* let default () = {value = S.Dom.bot (); called = lowest_prio; stable = lowest_prio} in *)
 
       let data = create_empty_solver_data () in
 
@@ -79,11 +73,16 @@ module Base : GenericEqSolver =
         in*)
 
       let init x =
-        if not (LHM.mem data x) then (
+      (* TODO this can be more efficient (no double query, and return value) *)
+      (* Currently, we iterate the tree twice, just publish new_var_event *)
+        let found = CM.find_option data x in
+        match found with
+        | Some d -> d
+        | None -> begin
           if tracing then trace "init" "init %a" S.Var.pretty_trace x;
           new_var_event x;
-          LHM.replace data x @@ default ()
-        )
+          CM.find_create data x
+        end
       in
 
       let eq x get set =
@@ -94,20 +93,20 @@ module Base : GenericEqSolver =
 
       let rec solve_thread x prio = 
         let rec find_work (worklist: S.v list) (seen: VS.t) = 
+          if true || prio = 0 then (
           match worklist, prio with
           | [], _ -> None
           | x :: xs, 0 -> if tracing then trace "work" "%d (main) working on %a" prio S.Var.pretty_trace x; Some x
           | x :: xs, _ ->
             if tracing then trace "search" "%d searching for work %a" prio S.Var.pretty_trace x;
-            LHM.lock x data;
-            let xr = LHM.find_default data x {
-                called = lowest_prio;
-                value = S.Dom.bot ();
-                stable = lowest_prio;
-              } in
+            (* TODO check if init is right here *)
+            let maybe_x_atom = CM.find_option data x in
+            match maybe_x_atom with
+            | None -> Some x
+            | Some x_atom ->
+            let xr = Atomic.get x_atom in
             let called_prio = xr.called in
             let stable_prio = xr.stable in
-            LHM.unlock x data;
             let maybe_eq = S.system x in
             if (prio < called_prio && prio < stable_prio && Option.is_some maybe_eq) then (
               if tracing then trace "work" "%d found work %a" prio S.Var.pretty_trace x;
@@ -117,13 +116,8 @@ module Base : GenericEqSolver =
               let new_work = ref [] in
               let fw_query (y: S.v): S.d =
                 if (not (VS.mem y seen)) then new_work := y :: !new_work;
-                LHM.lock y data;
-                let s = LHM.find_default data y {
-                    called = lowest_prio;
-                    value = S.Dom.bot ();
-                    stable = lowest_prio;
-                  } in
-                LHM.unlock y data;
+                let y_atom = init y in
+                let s = Atomic.get y_atom in
                 s.value
               in
               let fw_side _ _ = () in
@@ -132,11 +126,18 @@ module Base : GenericEqSolver =
               if Atomic.get main_finished then None else (
                 (* Introduce some randomness to prevent getting caught in unproductive sectors *)
                 let next_work = if (Random.bool ()) then (xs @ !new_work) else (!new_work @ xs) in
+                (* let next_work = xs @ !new_work in *)
+                (* let next_work = !new_work @ xs in *)
+                (* let next_work = if prio mod 2 = 0 then xs @ !new_work else !new_work @ xs in *)
                 find_work next_work (VS.add_seq (Seq.of_list !new_work) seen))
-            )
+            )) else (
+          while not @@ Atomic.get main_finished do () done;
+          None
+          ) 
         in 
 
         let do_work x =
+          (* Logs.info "Working on %a with prio %d" S.Var.pretty_trace x prio; *)
           let t_data = create_empty_thread_data () in
           let wpoint = t_data.wpoint in
           let infl = t_data.infl in
@@ -149,53 +150,48 @@ module Base : GenericEqSolver =
           let rec destabilize ~all x =
             let w = HM.find_default infl x VS.empty in
             HM.replace infl x VS.empty;
-            VS.iter (fun y ->
-                LHM.lock y data;
-                let s = LHM.find data y in
-                if (all || (prio <= s.stable)) && (s.stable <> lowest_prio) then (
-                  if tracing then trace "destab" "%d destabilizing %a from %d" prio S.Var.pretty_trace y s.stable;
-                  LHM.replace data y {s with stable = lowest_prio}
-                );
-                LHM.unlock y data;
-                destabilize ~all y
-              ) w
+            let rec destab_single y =
+              let y_atom = CM.find data y in
+              let y_record = Atomic.get y_atom in
+              if (all || (prio <= y_record.stable)) && (y_record.stable <> lowest_prio) then (
+                if tracing then trace "destab" "%d destabilizing %a from %d" prio S.Var.pretty_trace y y_record.stable;
+                let success = Atomic.compare_and_set y_atom y_record {y_record with stable = lowest_prio} in
+                if not success then destab_single y
+              ) in
+            VS.iter (fun y -> destab_single y; destabilize ~all y) w
           in
 
           let rec iterate x = (* ~(inner) solve in td3*)
             let query x y = (* ~eval in td3 *)
-              LHM.lock y data;
-              init y;
+              let y_atom = init y in
               get_var_event y;
-              let s = LHM.find data y in
+              let s = Atomic.get y_atom in
               if tracing then trace "sol_query" "%d entering query with prio %d for %a" prio s.called S.Var.pretty_trace y;
               if not (s.called <= prio) then (
                 (* If owning new, make sure it is not in point *)
                 if tracing && (HM.mem wpoint y) then trace "wpoint" "%d query removing wpoint %a" prio S.Var.pretty_trace y;
                 if HM.mem wpoint y then HM.remove wpoint y;
-                if S.system y = None then (
-                  if tracing then trace "stable" "%d query setting %a stable from %d" prio S.Var.pretty_trace y s.stable;
-                  LHM.replace data y {s with stable = prio}
+                if S.system y = None then ( (* Set globals to current priority *)
+                  let success = Atomic.compare_and_set y_atom s {s with called = prio} in
+                  if tracing && success then trace "stable" "%d query setting %a stable from %d" prio S.Var.pretty_trace y s.stable;
                 ) else (
-                  if tracing then trace "own" "%d taking ownership of %a." prio S.Var.pretty_trace y;
-                  if tracing && (s.called != lowest_prio) then trace "steal" "%d stealing %a from %d" prio S.Var.pretty_trace y s.called;
-                  LHM.replace data y {s with called = prio};
-                  LHM.unlock y data;
-                  (* call iterate unlocked *)
-                  if tracing then trace "iter" "%d iterate called from query" prio;
-                  iterate y;
-                  LHM.lock y data;
-                  let s = LHM.find data y in
+                  let success = Atomic.compare_and_set y_atom s {s with called = prio} in
+                  if tracing && success then trace "own" "%d taking ownership of %a." prio S.Var.pretty_trace y;
+
+                  if tracing && success then trace "iter" "%d iterate called from query" prio;
+                  if success then iterate y;
+
+                  let s = Atomic.get y_atom in
                   if (s.called >= prio) then (
                     if tracing then trace "own" "%d giving up ownership of %a." prio S.Var.pretty_trace y;
-                    LHM.replace data y {s with called = lowest_prio}
+                    ignore @@ Atomic.compare_and_set y_atom s {s with called = lowest_prio};
                   )
                 )
               ) else (
                 if tracing && not (HM.mem wpoint y) then trace "wpoint" "%d query adding wpoint %a from %a" prio S.Var.pretty_trace y S.Var.pretty_trace x;
                 HM.replace wpoint y ()
               );
-              let s = LHM.find data y in
-              LHM.unlock y data;
+              let s = Atomic.get y_atom in
               add_infl y x;
               if tracing then trace "answer" "%d query answer for %a: %a" prio S.Var.pretty_trace y S.Dom.pretty s.value;
               s.value
@@ -204,9 +200,8 @@ module Base : GenericEqSolver =
             let side x y d = (* side from x to y; only to variables y w/o rhs; x only used for trace *)
               if tracing then trace "side" "%d side to %a (wpx: %b) from %a ## value: %a" prio S.Var.pretty_trace y (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
               assert (S.system y = None);
-              LHM.lock y data;
-              init y;
-              let s = LHM.find data y in
+              let y_atom = init y in
+              let s = Atomic.get y_atom in
               if (s.called >= prio) then (
                 let old = s.value in
                 (* currently any side-effect after the first one will be widened *)
@@ -214,36 +209,30 @@ module Base : GenericEqSolver =
                 if not (S.Dom.leq tmp old) then (
                   if tracing then trace "updateSide" "%d side setting %a to %a" prio S.Var.pretty_trace y S.Dom.pretty tmp;
                   if tracing then trace "ownSide" "%d side taking ownership of %a. Previously owned by %d" prio S.Var.pretty_trace y s.called;
-                  LHM.replace data y {s with value = tmp; called = prio};
-                  LHM.unlock y data;
-                  if tracing then trace "destab" "%d destabilize called from side to %a" prio S.Var.pretty_trace y;
+                  let success = Atomic.compare_and_set y_atom s {s with value = tmp; called = prio} in
+                  if tracing && success then trace "destab" "%d destabilize called from side to %a" prio S.Var.pretty_trace y;
                   destabilize ~all:true y;
                   if tracing && not (HM.mem wpoint y) then trace "wpoint" "%d side adding wpoint %a from %a" prio S.Var.pretty_trace y S.Var.pretty_trace x;
                   HM.replace wpoint y ()
                 ) else (
-                  if tracing then trace "ownSide" "%d side taking ownership of %a. Previously owned by %d" prio S.Var.pretty_trace y s.called;
-                  LHM.replace data y {s with called = prio};
-                  LHM.unlock y data
+                  let success = Atomic.compare_and_set y_atom s {s with called = prio} in
+                  if tracing && success then trace "ownSide" "%d side taking ownership of %a. Previously owned by %d" prio S.Var.pretty_trace y s.called;
                 )
-              ) else (
-                LHM.unlock y data
-              )
+              ) 
             in
 
             (* begining of iterate *)
-            LHM.lock x data;
-            init x;
-            let s = LHM.find data x in
+            let x_atom = init x in
+            let s = Atomic.get x_atom in
             if tracing then trace "iter" "%d iterate %a, called: %b, stable: %b, wpoint: %b" prio S.Var.pretty_trace x (s.called <= prio) (s.stable <= prio) (HM.mem wpoint x);
             assert (S.system x <> None);
             if not (s.stable <= prio) then (
-              if tracing then trace "stable" "%d iterate setting %a stable from %d" prio S.Var.pretty_trace x s.stable;
-              LHM.replace data x {s with stable = prio};
+              let set_stable_success = Atomic.compare_and_set x_atom s {s with stable = prio} in
+              if tracing && set_stable_success then trace "stable" "%d iterate setting %a stable from %d" prio S.Var.pretty_trace x s.stable;
               let wp = HM.mem wpoint x in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
-              LHM.unlock x data;
               let eqd = eq x (query x) (side x) in
-              LHM.lock x data;
-              let s = LHM.find data x in
+
+              let s = Atomic.get x_atom in
               let old = s.value in (* d from older iterate *) (* find old value after eq since wpoint restarting in eq/query might have changed it meanwhile *)
               let wpd = (* d after box operator (if wp) *)
                 if not wp then 
@@ -251,36 +240,31 @@ module Base : GenericEqSolver =
                 else (if tracing then trace "wpoint" "%d box widening %a" prio S.Var.pretty_trace x; box old eqd)
               in
               (* TODO: wrap S.Dom.equal in timing if a reasonable threadsafe timing becomes available *)
-              if not (S.Dom.equal old wpd) then ( 
+              if set_stable_success && not (S.Dom.equal old wpd) then ( 
                 (* old != wpd *)
                 if (s.stable >= prio && s.called >= prio) then (
-                  if tracing then trace "sol" "%d Changed" prio;
-                  update_var_event x old wpd;
-                  if tracing then trace "update" "%d setting %a to %a" prio S.Var.pretty_trace x S.Dom.pretty wpd;
-                  LHM.replace data x {s with value = wpd};
-                  LHM.unlock x data;
-                  if tracing then trace "destab" "%d destabilize called from iterate of %a" prio S.Var.pretty_trace x;
-                  destabilize ~all:false x;
-                  if tracing then trace "iter" "%d iterate changed" prio;
-                  (iterate[@tailcall]) x
-                ) else (
-                  LHM.unlock x data
+                  let value_success = Atomic.compare_and_set x_atom s {s with value = wpd} in 
+                  if value_success then (
+                    if tracing then trace "sol" "%d Changed" prio;
+                    update_var_event x old wpd;
+                    if tracing then trace "update" "%d setting %a to %a" prio S.Var.pretty_trace x S.Dom.pretty wpd;
+                    if tracing then trace "destab" "%d destabilize called from iterate of %a" prio S.Var.pretty_trace x;
+                    destabilize ~all:false x;
+                    if tracing then trace "iter" "%d iterate changed" prio;
+                    (iterate[@tailcall]) x
+                  )
                 )
               ) else (
                 (* old = wpd*)
                 if not (s.stable <= prio) then (
                   if tracing then trace "iter" "%d iterate still unstable" prio;
-                  LHM.unlock x data;
                   (iterate[@tailcall]) x
                 ) else (
                   if tracing && (HM.mem wpoint x) then trace "wpoint" "%d iterate removing wpoint %a" prio S.Var.pretty_trace x;
                   HM.remove wpoint x;
-                  LHM.unlock x data
                 )
               )
-            ) else (
-              LHM.unlock x data;
-            )
+            ) 
           in
           iterate x 
         in
@@ -290,16 +274,15 @@ module Base : GenericEqSolver =
           let to_iterate = find_work [ x ] VS.empty in
           begin match to_iterate with
             | Some x -> begin 
-                LHM.lock x data;
-                let s = LHM.find_default data x {
-                    called = lowest_prio;
-                    value = S.Dom.bot ();
-                    stable = lowest_prio;
-                  } in
-                if prio < s.called then LHM.replace data x {s with called = prio};
-                LHM.unlock x data;
-                do_work x
-              end
+              (* TODO check if init is right here *)
+              (* Logs.info "Found %a with prio %d" S.Var.pretty_trace x prio; *)
+              let x_atom = init x in
+              let s = Atomic.get x_atom in
+              if prio < s.called then (
+                let success = Atomic.compare_and_set x_atom s {s with called = prio} in
+                if success then do_work x 
+              )
+            end
             | None -> () end;
           if (prio > highest_prio) then ( 
             if (not @@ Atomic.get main_finished) then (
@@ -315,19 +298,22 @@ module Base : GenericEqSolver =
       in
 
       let set_start (x,d) =
-        init x;
-        let s = LHM.find data x in
-        LHM.replace data x {s with value = d; stable = highest_prio}
+        let x_atom = init x in
+        let s = Atomic.get x_atom in
+        ignore @@ Atomic.compare_and_set x_atom s {s with value = d; stable = highest_prio};
       in
 
       let start_threads x =
         (* threads are created with a distinct prio, so that for all threads it holds: lowest_prio > prio >= highest_prio. highest_prio is the main thread. *)
+        Logs.info "Starting %d domains" nr_domains;
         assert (nr_domains > 0);
-        let threads = Array.init nr_domains (fun j ->
+        let rec fibo n = if n <= 1 then 1 else fibo (n-1) + fibo (n-2) in
+        let threads = Array.init (nr_domains-1) (fun j ->
             Domain.spawn (fun () -> 
                 if Logs.Level.should_log Debug then Printexc.record_backtrace true;
-                Unix.sleepf (Float.mul (float j) 0.25);
-                let prio = (lowest_prio - j - 1) in
+                (* Unix.sleepf (Float.mul (float j) 0.25); *)
+                (* let prio = (nr_domains - j - 1) in *)
+                let prio = j+1 in
                 if tracing then trace "start" "thread %d with prio %d started" j prio;
                 try
                   solve_thread x prio
@@ -335,37 +321,24 @@ module Base : GenericEqSolver =
                   e -> Printexc.print_backtrace stderr;
                   raise e
               )) in 
+        solve_thread x highest_prio;
         Array.iter Domain.join threads
       in
 
       (* beginning of main solve *)
       start_event ();
-      
-      (* (* Test cmap *) *)
-      (* let cmap = C.create () in *)
-      (* for i = 0 to 100 do *)
-      (* let value = C.find_create cmap i in *)
-      (* Atomic.incr value; *)
-      (* done; *)
-      (* for i = 0 to 100 do *)
-      (* let value = C.find_create cmap i in *)
-      (* Atomic.incr value; *)
-      (* done; *)
-      (* let kv = C.to_list cmap in *)
-      (* List.iter (fun (k, v) -> Logs.info "Cmap: %d -> %d" k (Atomic.get v)) kv; *)
 
       List.iter set_start st;
 
-      List.iter init vs;
+      List.iter (fun x -> ignore @@ init x) vs;
       (* If we have multiple start variables vs, we might solve v1, then while solving v2 we side some global which v1 depends on with a new value. Then v1 is no longer stable and we have to solve it again. *)
       let i = ref 0 in
       let rec solver () = (* as while loop in paper *)
         incr i;
-        let unstable_vs = List.filter (neg (fun x -> (LHM.find data x).stable < lowest_prio)) vs in
+        let unstable_vs = List.filter (neg (fun x -> (Atomic.get @@ CM.find data x).stable < lowest_prio)) vs in
         if unstable_vs <> [] then (
           if Logs.Level.should_log Debug then (
             if !i = 1 then Logs.newline ();
-            Logs.debug "Unstable solver start vars in %d. phase:" !i;
             List.iter (fun v -> Logs.debug "\t%a" S.Var.pretty_trace v) unstable_vs;
             Logs.newline ();
             flush_all ();
@@ -391,11 +364,11 @@ module Base : GenericEqSolver =
         Logs.newline ();
       );
 
-      if GobConfig.get_bool "dbg.timing.enabled" then LHM.print_stats data;
+      (* if GobConfig.get_bool "dbg.timing.enabled" then LHM.print_stats data; *)
 
-      let data_ht = LHM.to_hashtbl data in
+      let data_ht = CM.to_hashtbl data in
       HM.map (fun _ s -> s.value) data_ht
   end
 
 let () =
-  Selector.add_solver ("td_parallel_stealing", (module PostSolver.EqIncrSolverFromEqSolver (Base)));
+  Selector.add_solver ("td_parallel_stealing_cmap", (module PostSolver.EqIncrSolverFromEqSolver (Base)));

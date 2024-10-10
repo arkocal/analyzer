@@ -80,3 +80,125 @@ struct
 
   let finished_with pool = T.teardown_pool pool
 end
+
+
+module type DefaultType = sig
+  type t
+  val default: unit -> t
+end
+
+
+module CreateOnlyConcurrentMap (H:Hashtbl.HashedType) (D: DefaultType) (HM:Hashtbl.S with type key = H.t) =
+  struct
+  type node = {
+    left: (node option) Atomic.t;
+    right: (node option) Atomic.t;
+    key: H.t;
+    hashval: int;
+    value: D.t Atomic.t;
+  }
+
+  type t = (node option) Atomic.t
+
+  let create () = Atomic.make None 
+
+  let create_default_node key = 
+    let new_node =
+      {  
+        left = Atomic.make None;
+        right = Atomic.make None;
+        key = key;
+        hashval = H.hash key;
+        value = Atomic.make (D.default ());
+      }
+    in new_node
+
+  let find_option (cmap : t) (key : H.t): D.t Atomic.t option =
+    let rec find_option_with_hash (search_node : node option) (hashval : int) =
+      match search_node with
+      | None -> None
+      | Some node' ->
+        if hashval = node'.hashval && H.equal key node'.key then
+          Some node'.value
+        else if hashval <= node'.hashval then
+          find_option_with_hash (Atomic.get node'.left) hashval 
+        else
+          find_option_with_hash (Atomic.get node'.right) hashval
+    in
+    find_option_with_hash (Atomic.get cmap) (H.hash key)
+  
+  let mem (cmap : t) (key : H.t): bool =
+    Option.is_some @@ find_option cmap key
+  
+  let find (cmap : t) (key : H.t): D.t Atomic.t =
+    match find_option cmap key with
+    | None -> Logs.error "Not found here"; raise Not_found
+    | Some value -> value    
+
+  let to_list (cmap: t): (H.t * D.t Atomic.t) list =
+    let rec to_list' node acc =
+      match node with
+      | None -> acc
+      | Some node' ->
+        let acc = to_list' (Atomic.get node'.left) acc in
+        let acc = (node'.key, node'.value) :: acc in
+        to_list' (Atomic.get node'.right) acc
+    in
+    to_list' (Atomic.get cmap) []
+
+  let to_hashtbl (cmap: t): D.t HM.t =
+    HM.of_list @@ List.map (fun (k, v) -> (k, Atomic.get v)) @@ to_list cmap
+
+  let rec find_create (cmap: t) (key: H.t): D.t Atomic.t =
+    let find_create_with_hash (atomic_node : t) hashval =
+      match Atomic.get atomic_node with
+      | None -> 
+        let new_node = create_default_node key in
+        let success = Atomic.compare_and_set atomic_node None (Some new_node) in
+        if success then new_node.value else find_create atomic_node key
+      | Some node' ->
+        if hashval = node'.hashval && H.equal key node'.key then
+          node'.value
+        else if hashval <= node'.hashval then
+          find_create node'.left key
+        else
+          find_create node'.right key
+    in find_create_with_hash cmap (H.hash key)
+
+  (* let find_default_creating (key : H.t) node = *)
+  (*   let rec find_default_creating_with_hash hashval node = *)
+  (*     match node with *)
+  (*     | None -> assert false *)
+  (*     | Some node' -> *)
+  (*       if hashval = node'.hashval && Option.map_default (H.equal key) false node'.key then ( *)
+  (*         node') *)
+  (*       else if hashval <= node'.hashval then *)
+  (*         (match Atomic.get node'.left with *)
+  (*           | None -> *)
+  (*             Logs.info "Creating left node for %d" hashval; *)
+  (*             let success = Atomic.compare_and_set node'.left None (Some (create_default_node @@ Some key)) in *)
+  (*             assert success; *)
+  (*             find_default_creating_with_hash hashval @@ Atomic.get node'.left *)
+  (*           | Some left -> find_default_creating_with_hash hashval (Some left) *)
+  (*         ) *)
+  (*       else ( *)
+  (*         match Atomic.get node'.right with *)
+  (*         | None -> *)
+  (*           Logs.info "Creating right node for %d" hashval; *)
+  (*           let success = Atomic.compare_and_set node'.right None (Some (create_default_node @@ Some key)) in *)
+  (*           assert success; *)
+  (*           Logs.info "Created right node for %d" hashval; *)
+  (*           find_default_creating_with_hash hashval @@ Atomic.get node'.right *)
+  (*         | Some right -> find_default_creating_with_hash hashval (Some right)  *)
+  (*       ) in *)
+  (*   let res_node = (find_default_creating_with_hash (H.hash key) node) in *)
+  (*   match res_node.key with *)
+  (*   | None -> assert false *)
+  (*   | Some nodekey -> ( *)
+  (*     Logs.info "Found here again some key with hash %d" (H.hash nodekey); *)
+  (*     assert (H.equal nodekey key); *)
+  (*     Logs.info "Assert equal success"; *)
+  (*   ); *)
+  (*   res_node.value *)
+
+end
