@@ -13,6 +13,16 @@ open Parallel_util
 
 module M = Messages
 
+module CasStat = struct
+  let count_success = Atomic.make 0
+  let count_failure = Atomic.make 0
+  let cas key old new_ =
+    if Atomic.compare_and_set key old new_ then
+      (Atomic.incr count_success; true)
+    else
+      (Atomic.incr count_failure; false)
+end
+
 module Base : GenericCreatingEqSolver =
   functor (S:CreatingEqConstrSys) ->
   functor (HM:Hashtbl.S with type key = S.v) ->
@@ -32,6 +42,8 @@ module Base : GenericCreatingEqSolver =
     }
     let default () = {value = S.Dom.bot (); infl = VS.empty; called = false; stable = false; wpoint = false; root = false}
 
+    let cas = CasStat.cas
+
     module DefaultState = struct
       type t = state
       let default = default
@@ -42,7 +54,9 @@ module Base : GenericCreatingEqSolver =
     let create_empty_data () = CM.create () 
 
     let print_data data =
-      Logs.debug "Print data called, no further information available"
+      Logs.debug "CAS success: %d" (Atomic.get CasStat.count_success);
+      Logs.debug "CAS failure: %d" (Atomic.get CasStat.count_failure);
+      Logs.debug "CAS success rate: %f" (float_of_int (Atomic.get CasStat.count_success) /. (float_of_int (Atomic.get CasStat.count_success + Atomic.get CasStat.count_failure)))
       (* Logs.debug "|rho|=%d" (LHM.length data) *)
     (*Logs.debug "|stable|=%d" (LHM.length data.stable);
       Logs.debug "|infl|=%d" (LHM.length data.infl);
@@ -92,6 +106,18 @@ module Base : GenericCreatingEqSolver =
         | Some f -> f get set (Some create)
       in
 
+      (* let wrap_cas_repeat_on_fail atomic func = *)
+      (*   let rec repeat () = *)
+      (*     let old_val = Atomic.get atomic in *)
+      (*     let new_val = func old_val in *)
+      (*     if cas atomic old_val new_val then *)
+      (*       new_val *)
+      (*     else *)
+      (*       repeat () *)
+      (*   in *)
+      (*   repeat () *)
+      (* in *)
+
       (** destabilizes vars from outer_w and their infl. Restarts from a root, if it was destabilized*)
       let rec destabilize prom outer_w =
         let rec destab_single y =
@@ -100,7 +126,7 @@ module Base : GenericCreatingEqSolver =
           if not s.stable then (
             ()
           ) else if s.called then (
-            let success = Atomic.compare_and_set y_atom s {s with stable = false} in
+            let success = cas y_atom s {s with stable = false} in
             if success then (
               if tracing then trace "destab-v" "stable remove %a (root:%b, called:%b)" S.Var.pretty_trace y s.root s.called;
             ) else (
@@ -109,7 +135,7 @@ module Base : GenericCreatingEqSolver =
           ) else (
             (* destabilize infl *)
             let inner_w = s.infl in
-            let success = Atomic.compare_and_set y_atom s {s with infl = VS.empty; stable = false} in
+            let success = cas y_atom s {s with infl = VS.empty; stable = false} in
             if success then (
               if tracing then trace "destab-v" "stable remove %a (root:%b, called:%b)" S.Var.pretty_trace y s.root s.called;
               if s.root then create_task prom y; (* This has to be y *)
@@ -155,19 +181,21 @@ module Base : GenericCreatingEqSolver =
           (* if tracing then trace "infl" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x; *)
           (* let s = {s with infl = (VS.add x s.infl)} in *)
           let s_with_infl = {s with infl = (VS.add x s.infl)} in
+
           if s.called then (
             if tracing then trace "infl" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
-            let success = Atomic.compare_and_set y_atom s {s_with_infl with wpoint=true} in
+            let success = cas y_atom s {s_with_infl with wpoint=true} in
             if success then s.value else query x y
-          ) else if s.stable then (
-            let success = Atomic.compare_and_set y_atom s s_with_infl in 
+          ) 
+          else if s.stable then (
+            let success = cas y_atom s s_with_infl in 
             if success then s.value else query x y
           ) else (
             if S.system y = None then (
-              let success = Atomic.compare_and_set y_atom s {s_with_infl with stable = true} in
+              let success = cas y_atom s {s_with_infl with stable = true} in
               if success then s.value else query x y
             ) else (
-              let success = Atomic.compare_and_set y_atom s {s_with_infl with stable = true; called=true} in
+              let success = cas y_atom s {s_with_infl with stable = true; called=true} in
               if success then (
                 iterate (Some x) prom y job_id;
                 (Atomic.get y_atom).value
@@ -197,7 +225,7 @@ module Base : GenericCreatingEqSolver =
             if tracing then trace "update" "%d side update %a with \n\t%a" job_id S.Var.pretty_trace x S.Dom.pretty (widen old d);
             let w = s.infl in
             let new_s = {s with value = (widen old d); stable = true; infl = VS.empty} in
-            let success = Atomic.compare_and_set y_atom s new_s in
+            let success = cas y_atom s new_s in
             if success then (
               if tracing then trace "destab" "%d side destabilizing %a" job_id S.Var.pretty_trace y;
               destabilize prom w
@@ -249,7 +277,7 @@ module Base : GenericCreatingEqSolver =
           let w = s.infl in
           if tracing then trace "update" "%d iterate update %a with \n\t%a" job_id S.Var.pretty_trace x S.Dom.pretty wpd;
           let new_s = {s with value = wpd; infl = VS.empty} in
-          let success = Atomic.compare_and_set x_atom s new_s in
+          let success = cas x_atom s new_s in
           if success then (
             if tracing then trace "destab" "%d iterate destabilizing %a" job_id S.Var.pretty_trace x;
             destabilize prom w;
@@ -318,6 +346,11 @@ module Base : GenericCreatingEqSolver =
       in
       solver ();
       Thread_pool.finished_with pool;
+
+
+      Logs.info "CAS success: %d" (Atomic.get CasStat.count_success);
+      Logs.info "CAS failure: %d" (Atomic.get CasStat.count_failure);
+    Logs.info "CAS success rate: %f" (float_of_int (Atomic.get CasStat.count_success) /. (float_of_int (Atomic.get CasStat.count_success + Atomic.get CasStat.count_failure)));
       (* After termination, only those variables are stable which are
        * - reachable from any of the queried variables vs, or
        * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)
