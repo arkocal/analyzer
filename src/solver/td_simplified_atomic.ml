@@ -245,6 +245,7 @@ module Base : GenericEqSolver =
 
       (* beginning of main solve *)
       start_event ();
+      Logs.error "Starting solve";
 
       List.iter set_start st;
 
