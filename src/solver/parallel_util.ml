@@ -87,6 +87,34 @@ module type DefaultType = sig
   val default: unit -> t
 end
 
+module NormalHMWrapper (H:Hashtbl.HashedType) (D: DefaultType) (HM:Hashtbl.S with type key = H.t) =
+  struct
+
+  type t = D.t Atomic.t HM.t
+  let create () = HM.create 10
+
+  let find_option (hm : t) (key : H.t): D.t Atomic.t option =
+    try Some (HM.find hm key)
+    with Not_found -> None
+  
+  let mem = HM.mem
+
+  let find (hm : t) (key : H.t): D.t Atomic.t =
+    HM.find hm key
+
+  let to_list (hm: t): (H.t * D.t Atomic.t) list =
+    HM.to_list hm
+
+  let to_hashtbl (hm: t): D.t HM.t =
+    HM.of_list @@ List.map (fun (k, v) -> (k, Atomic.get v)) @@ to_list hm
+
+  let find_create (hm: t) (key: H.t): D.t Atomic.t =
+    try HM.find hm key
+    with Not_found -> 
+      let new_value = Atomic.make (D.default ()) in
+      HM.add hm key new_value;
+      new_value
+end
 
 module CreateOnlyConcurrentMap (H:Hashtbl.HashedType) (D: DefaultType) (HM:Hashtbl.S with type key = H.t) =
   struct
