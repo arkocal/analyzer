@@ -87,16 +87,9 @@ module Base : GenericCreatingEqSolver =
       in
 
       let init x =
-      (* TODO this can be more efficient (no double query, and return value) *)
-      (* Currently, we iterate the tree twice, just publish new_var_event *)
-        let found = CM.find_option data x in
-        match found with
-        | Some d -> d
-        | None -> begin
-          if tracing then trace "init" "init %a" S.Var.pretty_trace x;
-          new_var_event x;
-          CM.find_create data x
-        end
+      let value, was_created = CM.find_create data x in
+      if (was_created) then new_var_event x;
+      value
       in
 
       let eq x get set create =

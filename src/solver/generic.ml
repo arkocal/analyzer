@@ -66,6 +66,7 @@ struct
     if tracing then trace "sol" "New %a" Var.pretty_trace x
 
   let get_var_event x =
+    Logs.error "get_var_event";
     if tracing && full_trace then trace "sol" "Querying %a" Var.pretty_trace x
 
   let eval_rhs_event x =

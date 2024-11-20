@@ -177,16 +177,16 @@ module CreateOnlyConcurrentMap (H:Hashtbl.HashedType) (D: DefaultType) (HM:Hasht
   let to_hashtbl (cmap: t): D.t HM.t =
     HM.of_list @@ List.map (fun (k, v) -> (k, Atomic.get v)) @@ to_list cmap
 
-  let rec find_create (cmap: t) (key: H.t): D.t Atomic.t =
+  let rec find_create (cmap: t) (key: H.t): (D.t Atomic.t * bool) =
     let find_create_with_hash (atomic_node : t) hashval =
       match Atomic.get atomic_node with
       | None -> 
         let new_node = create_default_node key in
         let success = Atomic.compare_and_set atomic_node None (Some new_node) in
-        if success then new_node.value else find_create atomic_node key
+        if success then (new_node.value, true) else find_create atomic_node key
       | Some node' ->
         if hashval = node'.hashval && H.equal key node'.key then
-          node'.value
+          (node'.value, false)
         else if hashval <= node'.hashval then
           find_create node'.left key
         else
