@@ -29,7 +29,8 @@ module Base : GenericCreatingEqSolver =
   struct
     open SolverBox.Warrow (S.Dom)
     (* TODO: Maybe different solver stats according for CreatingEQsys is needed *)
-    include Generic.SolverStats (EqConstrSysFromCreatingEqConstrSys (S)) (HM)
+    (* include Generic.SolverStats (EqConstrSysFromCreatingEqConstrSys (S)) (HM) *)
+    include ParallelSolverStats (EqConstrSysFromCreatingEqConstrSys (S)) (HM)
     module VS = Set.Make (S.Var)
 
     type state = {
@@ -87,9 +88,10 @@ module Base : GenericCreatingEqSolver =
       in
 
       let init x =
-      let value, was_created = CM.find_create data x in
-      if (was_created) then new_var_event x;
-      value
+        let value, was_created = CM.find_create data x in
+        (* TODO event: id is fixed to 0 *)
+        if (was_created) then new_var_event 0 x;
+        value
       in
 
       let eq x get set create =
@@ -151,17 +153,19 @@ module Base : GenericCreatingEqSolver =
             let success = Atomic.compare_and_set y_atom s {s with called = true; stable = true; root = true} in 
             if success then (
               if tracing then trace "thread_pool" "starting task %d to iterate %a" job_id S.Var.pretty_trace y;
+              thread_starts_solve_event job_id;
               let inner_prom = ref [] in
-              iterate None inner_prom y job_id;
+              iterate None inner_prom y job_id y_atom;
+            thread_ends_solve_event job_id;
               Thread_pool.await_all pool (!inner_prom);
-              if tracing then trace "thread_pool" "finishing task %d" job_id
+            if tracing then trace "thread_pool" "finishing task %d" job_id;
             )
           )
         in
         outer_prom := Thread_pool.add_work pool work_fun :: (!outer_prom)
 
       (** iterates to solve for x (invoked from query to orig if present) *)
-      and iterate orig prom x job_id = (* ~(inner) solve in td3*)
+      and iterate orig prom x job_id x_atom = (* ~(inner) solve in td3*)
         let rec query x y = (* ~eval in td3 *)
           (* Query with atomics: *)
           (* if anything is changed, query is repeated and the initial call *)
@@ -190,7 +194,7 @@ module Base : GenericCreatingEqSolver =
             ) else (
               let success = cas y_atom s {s_with_infl with stable = true; called=true} in
               if success then (
-                iterate (Some x) prom y job_id;
+                iterate (Some x) prom y job_id y_atom;
                 (Atomic.get y_atom).value
               )
               else query x y
@@ -221,6 +225,7 @@ module Base : GenericCreatingEqSolver =
             let success = cas y_atom s new_s in
             if success then (
               if tracing then trace "destab" "%d side destabilizing %a" job_id S.Var.pretty_trace y;
+              update_var_event job_id y old (new_s.value);
               destabilize prom w
             ) else (
               side x y d
@@ -235,11 +240,13 @@ module Base : GenericCreatingEqSolver =
 
         (* begining of iterate*)
         assert (S.system x <> None);
-        let x_atom = init x in
+        (* let x_atom = init x in *)
         let s = Atomic.get x_atom in
         if tracing then trace "iter" "%d iterate %a, stable: %b, wpoint: %b" job_id S.Var.pretty_trace x s.stable s.wpoint;
         let wp = s.wpoint in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
         let eqd = eq x (query x) (side x) (create x) in
+        (* TODO event: id is fixed to 0 *)
+        eval_rhs_event job_id x;
         let s = Atomic.get x_atom in
         let old = s.value in
         let wpd = (* d after box operator (if wp) *)
@@ -256,14 +263,14 @@ module Base : GenericCreatingEqSolver =
               | None -> s.infl in
             let s_new = {s with infl = infl; called = false; wpoint = false} in
             let success = Atomic.compare_and_set x_atom s s_new in
-            if not success then  (iterate[@tailcall]) orig prom x job_id
+            if not success then  (iterate[@tailcall]) orig prom x job_id x_atom
           ) else (
             let s_new = {s with stable = true} in
             let success = Atomic.compare_and_set x_atom s s_new in
             (* if not success, we retry the iteration to have intervention free execution, *)
             (* if success, we also reiterate, as unstable *)
             if tracing then trace "iter" "iterate still unstable %a" S.Var.pretty_trace x;
-            (iterate[@tailcall]) orig prom x job_id
+            (iterate[@tailcall]) orig prom x job_id x_atom
           )
         ) else (
           (* old != wpd*)
@@ -273,6 +280,7 @@ module Base : GenericCreatingEqSolver =
           let success = cas x_atom s new_s in
           if success then (
             if tracing then trace "destab" "%d iterate destabilizing %a" job_id S.Var.pretty_trace x;
+            update_var_event job_id x old wpd;
             destabilize prom w;
 
             let rec finalize () =
@@ -290,13 +298,13 @@ module Base : GenericCreatingEqSolver =
                 let success = Atomic.compare_and_set x_atom s new_s in 
                 if success then (
                   if tracing then trace "iter" "iterate changed %a" S.Var.pretty_trace x;
-                  (iterate[@tailcall]) orig prom x job_id
+                  (iterate[@tailcall]) orig prom x job_id x_atom
                 ) else (finalize[@tailcall]) ()
               ) in
             finalize ()
 
           ) else (
-            (iterate[@tailcall]) orig prom x job_id
+            (iterate[@tailcall]) orig prom x job_id x_atom
           );
         )
       in
@@ -348,10 +356,13 @@ module Base : GenericCreatingEqSolver =
        * - reachable from any of the queried variables vs, or
        * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)
 
+      print_stats ();
       stop_event ();
       print_data_verbose data "Data after iterate completed";
 
+      let t = Unix.gettimeofday () in
       let data_ht = CM.to_hashtbl data in
+      Logs.error "Conversion to hashtable took %f" (Unix.gettimeofday () -. t);
       let wpoint = HM.map (fun _ s -> s.wpoint) data_ht in
 
       if GobConfig.get_bool "dbg.print_wpoints" then (
