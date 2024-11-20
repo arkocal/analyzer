@@ -7,18 +7,160 @@
 
 open Batteries
 open ConstrSys
+open GobConfig
 open Messages
 
 open Parallel_util
 
 module M = Messages
 
+module ParallelSolverStats (S:EqConstrSys) (HM:Hashtbl.S with type key = S.v) =
+struct
+  open S
+  open Messages
+
+  let stack_d = Atomic.make 0
+  let vars = Atomic.make 0
+  (* TODO 4 is selected for quick testing, should be variable *)
+  let vars_by_thread = Array.init 4 (fun _ -> Atomic.make 0) 
+  (* TODO now there is a reasonanle distinction between query and get_var *)
+  (* or is there? *)
+  let queries = Atomic.make 0
+  let queries_by_thread = Array.init 4 (fun _ -> Atomic.make 0)
+  let evals = Atomic.make 0
+  let evals_by_thread = Array.init 4 (fun _ -> Atomic.make 0)
+
+  let updates = Atomic.make 0
+  let updates_by_thread = Array.init 4 (fun _ -> Atomic.make 0)
+
+  let full_trace = false
+  let start_c = 0
+  let max_c   : int ref = ref (-1)
+  let max_var : Var.t option ref = ref None
+
+  let histo = HM.create 1024
+  let increase (v:Var.t) =
+    let set v c =
+      if not full_trace && (c > start_c && c > !max_c && not (GobOption.exists (Var.equal v) !max_var)) then begin
+        if tracing then trace "sol" "Switched tracing to %a" Var.pretty_trace v;
+        max_c := c;
+        max_var := Some v
+      end
+    in
+    try let c = HM.find histo v in
+      set v (c+1);
+      HM.replace histo v (c+1)
+    with Not_found -> begin
+        set v 1;
+        HM.add histo v 1
+      end
+
+  let start_event () = ()
+  let stop_event () = ()
+
+  let new_var_event thread_id x =
+    Atomic.incr vars;
+    Atomic.incr vars_by_thread.(thread_id);
+    if tracing then trace "sol" "New %a" Var.pretty_trace x
+
+  let get_var_event x =
+    Atomic.incr queries;
+    if tracing && full_trace then trace "sol" "Querying %a" Var.pretty_trace x
+
+  let eval_rhs_event thread_id x =
+    if tracing && full_trace then trace "sol" "(Re-)evaluating %a" Var.pretty_trace x;
+    Atomic.incr evals;
+    Atomic.incr evals_by_thread.(thread_id);
+    if (get_bool "dbg.solver-progress") then (Atomic.incr stack_d; Logs.debug "%d" @@ Atomic.get stack_d)
+
+  let update_var_event thread_id x o n =
+    Atomic.incr updates;
+    Atomic.incr updates_by_thread.(thread_id);
+    if tracing then increase x;
+    if full_trace || (not (Dom.is_bot o) && GobOption.exists (Var.equal x) !max_var) then begin
+      if tracing then tracei "sol_max" "(%d) Update to %a" !max_c Var.pretty_trace x;
+      if tracing then traceu "sol_max" "%a" Dom.pretty_diff (n, o)
+    end
+
+  (* solvers can assign this to print solver specific statistics using their data structures *)
+  let print_solver_stats = ref (fun () -> ())
+
+  (* this can be used in print_solver_stats *)
+  let ncontexts = ref 0
+  let print_context_stats rho =
+    let histo = Hashtbl.create 13 in (* histogram: node id -> number of contexts *)
+    let str k = GobPretty.sprint S.Var.pretty_trace k in (* use string as key since k may have cycles which lead to exception *)
+    let is_fun k = match S.Var.node k with FunctionEntry _ -> true | _ -> false in (* only count function entries since other nodes in function will have leq number of contexts *)
+    HM.iter (fun k _ -> if is_fun k then Hashtbl.modify_def 0 (str k) ((+)1) histo) rho;
+    (* let max_k, n = Hashtbl.fold (fun k v (k',v') -> if v > v' then k,v else k',v') histo (Obj.magic (), 0) in *)
+    (* Logs.debug "max #contexts: %d for %s" n max_k; *)
+    ncontexts := Hashtbl.fold (fun _ -> (+)) histo 0;
+    let topn = 5 in
+    Logs.debug "Found %d contexts for %d functions. Top %d functions:" !ncontexts (Hashtbl.length histo) topn;
+    Hashtbl.to_list histo
+    |> List.sort (fun (_,n1) (_,n2) -> compare n2 n1)
+    |> List.take topn
+    |> List.iter @@ fun (k,n) -> Logs.debug "%d\tcontexts for %s" n k
+
+  let stats_csv =
+    let save_run_str = GobConfig.get_string "save_run" in
+    if save_run_str <> "" then (
+      let save_run = Fpath.v save_run_str in
+      GobSys.mkdir_or_exists save_run;
+      Fpath.(to_string (save_run / "solver_stats.csv")) |> open_out |> Option.some
+    ) else None
+  let write_csv xs oc = output_string oc @@ String.concat ",\t" xs ^ "\n"
+
+  (* print generic and specific stats *)
+  let print_stats _ =
+    Logs.newline ();
+    (* print_endline "# Generic solver stats"; *)
+    Logs.info "runtime: %s" (GobSys.string_of_time ());
+    (* Logs.info "vars: %d, evals: %d" (Atomic.get vars) (Atomic.get evals); *)
+    Logs.info "vars: %d" (Atomic.get vars);
+    Array.iteri (fun i v -> Logs.info "    vars (%d): %d" i (Atomic.get v)) vars_by_thread;
+    
+    Logs.info "evals: %d" (Atomic.get evals);
+    Array.iteri (fun i v -> Logs.info "    evals (%d): %d" i (Atomic.get v)) evals_by_thread;
+
+    Logs.info "updates: %d" (Atomic.get updates);
+    Array.iteri (fun i v -> Logs.info "    updates (%d): %d" i (Atomic.get v)) updates_by_thread;
+
+    Option.may (fun v -> ignore @@ Logs.info "max updates: %d for var %a" !max_c Var.pretty_trace v) !max_var;
+    Logs.newline ();
+    (* print_endline "# Solver specific stats"; *)
+    !print_solver_stats ();
+    Logs.newline ();
+    (* Timing.print (M.get_out "timing" Legacy.stdout) "Timings:\n"; *)
+    (* Gc.print_stat stdout; (* too verbose, slow and words instead of MB *) *)
+    let gc = GobGc.print_quick_stat Legacy.stderr in
+    Logs.newline ();
+    Option.may (write_csv [GobSys.string_of_time (); string_of_int !SolverStats.vars; string_of_int !SolverStats.evals; string_of_int !ncontexts; string_of_int gc.Gc.top_heap_words]) stats_csv
+  (* print_string "Do you want to continue? [Y/n]"; *)
+  (* flush stdout *)
+  (* if read_line () = "n" then raise Break *)
+
+  let () =
+    let write_header = write_csv ["runtime"; "vars"; "evals"; "contexts"; "max_heap"] (* TODO @ !solver_stats_headers *) in
+    Option.may write_header stats_csv;
+    (* call print_stats on dbg.solver-signal *)
+    Sys.set_signal (GobSys.signal_of_string (get_string "dbg.solver-signal")) (Signal_handle print_stats);
+    (* call print_stats every dbg.solver-stats-interval *)
+    Sys.set_signal Sys.sigvtalrm (Signal_handle print_stats);
+    (* https://ocaml.org/api/Unix.html#TYPEinterval_timer ITIMER_VIRTUAL is user time; sends sigvtalarm; ITIMER_PROF/sigprof is already used in Timeout.Unix.timeout *)
+    let ssi = get_int "dbg.solver-stats-interval" in
+    if ssi > 0 then
+      let it = float_of_int ssi in
+      ignore Unix.(setitimer ITIMER_VIRTUAL { it_interval = it; it_value = it });
+end
+
 module Base : GenericCreatingEqSolver =
 functor (S:CreatingEqConstrSys) ->
 functor (HM:Hashtbl.S with type key = S.v) ->
 struct
   open SolverBox.Warrow (S.Dom)
-  include Generic.SolverStats (EqConstrSysFromCreatingEqConstrSys (S)) (HM)
+  (* include Generic.SolverStats (EqConstrSysFromCreatingEqConstrSys (S)) (HM) *)
+    include ParallelSolverStats (EqConstrSysFromCreatingEqConstrSys (S)) (HM)
   module VS = Set.Make (S.Var)
 
   type state = {
@@ -68,24 +210,17 @@ struct
     let respawn_points = HM.create 10 in
     let data = create_empty_solver_data () in
 
-    (*let () = print_solver_stats := fun () ->
-          print_data data;
-          print_context_stats @@ LHM.to_hashtbl rho
-        in*)
-
-
-    let init x =
-      (* TODO this can be more efficient (no double query, and return value) *)
-      (* Currently, we iterate the tree twice, just publish new_var_event *)
-      let found = CM.find_option data x in
-      match found with
-      | Some d -> d
-      | None -> begin
-        if tracing then trace "init" "init %a" S.Var.pretty_trace x;
-        new_var_event x;
-        CM.find_create data x
-        end
+    let () = print_solver_stats := fun () ->
+      Logs.debug "New vars: %d" (Atomic.get vars);
     in
+
+    (* Init with optional arg prio *)
+    let init ?(prio=0) x =
+      let value, was_created = CM.find_create data x in
+      if (was_created) then new_var_event prio x;
+      value
+    in
+
 
     let eq x get set create =
       match S.system x with
@@ -94,6 +229,8 @@ struct
     in
 
     let rec solve_thread x prio = 
+      let init x = init ~prio:prio x in
+
       let rec find_work_from (worklist: S.v list) (seen: VS.t) = 
         if true || prio = 0 then (
           match worklist, prio with
@@ -101,7 +238,6 @@ struct
           | x :: xs, 0 -> if tracing then trace "work" "%d (main) working on %a" prio S.Var.pretty_trace x; Some x
           | x :: xs, _ ->
             if tracing then trace "search" "%d searching for work %a" prio S.Var.pretty_trace x;
-            (* TODO check if init is right here *)
             let maybe_x_atom = CM.find_option data x in
             match maybe_x_atom with
             | None -> Some x
@@ -144,13 +280,18 @@ struct
       (*     begin *)
       (*       let starting_point = fst @@ List.hd @@ HM.to_list respawn_points in *)
       (*       HM.remove respawn_points starting_point; *)
-      (*       find_work_from [starting_point] (VS.empty) *)
-      (* end *)
+      (*       let found = find_work_from [starting_point] (VS.empty) in *)
+      (*       match found with *)
+      (*       | Some f -> Some f *)
+      (*       | None -> find_work worklist seen *)
+      (*       end *)
       (* in *)
 
       let find_work worklist seen =
         find_work_from ((HM.to_list respawn_points |> List.map fst) @ worklist) VS.empty
       in
+
+      (* let find_work = find_work_from in *)
 
       let do_work x =
         (* Logs.info "Working on %a with prio %d" S.Var.pretty_trace x prio; *)
@@ -182,7 +323,7 @@ struct
           let rec create x y = (* create called from x on y *)
             (* Logs.error "Create called!"; *)
             (* TODO this should also be thread safe *)
-            if (prio == 0) then HM.replace respawn_points y ();
+            if (prio == 0) then HM.replace respawn_points x ();
             (* Logs.error "Current number of respawn points: %d" (HM.length respawn_points); *)
             ignore @@ query x y;
             (* Logs.error "Create finished with prio %d" prio; *)
@@ -234,6 +375,10 @@ struct
               if tracing then trace "updateSide" "%d side setting %a to %a" prio S.Var.pretty_trace y S.Dom.pretty tmp;
               if tracing then trace "ownSide" "%d side taking ownership of %a. Previously owned by %d" prio S.Var.pretty_trace y s.called;
               let success = Atomic.compare_and_set y_atom s {s with value = tmp; called = prio} in
+              if (success) then (
+                update_var_event prio y old tmp;
+                );
+                (* TODO check if we are destabilizing too much *)
               if tracing && success then trace "destab" "%d destabilize called from side to %a" prio S.Var.pretty_trace y;
               destabilize ~all:true y;
               if tracing && not (HM.mem wpoint y) then trace "wpoint" "%d side adding wpoint %a from %a" prio S.Var.pretty_trace y S.Var.pretty_trace x;
@@ -255,7 +400,7 @@ struct
           if tracing && set_stable_success then trace "stable" "%d iterate setting %a stable from %d" prio S.Var.pretty_trace x s.stable;
           let wp = HM.mem wpoint x in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
           let eqd = eq x (query x) (side x) (create x) in
-
+            eval_rhs_event prio x;
           let s = Atomic.get x_atom in
           let old = s.value in (* d from older iterate *) (* find old value after eq since wpoint restarting in eq/query might have changed it meanwhile *)
           let wpd = (* d after box operator (if wp) *)
@@ -270,7 +415,7 @@ struct
               let value_success = Atomic.compare_and_set x_atom s {s with value = wpd} in 
               if value_success then (
                 if tracing then trace "sol" "%d Changed" prio;
-                update_var_event x old wpd;
+                update_var_event prio x old wpd;
                 if tracing then trace "update" "%d setting %a to %a" prio S.Var.pretty_trace x S.Dom.pretty wpd;
                 if tracing then trace "destab" "%d destabilize called from iterate of %a" prio S.Var.pretty_trace x;
                 destabilize ~all:false x;
@@ -333,7 +478,6 @@ struct
     Logs.info "Starting %d domains" nr_domains;
     let threads = Array.init (nr_domains-1) (fun j ->
       Domain.spawn (fun () -> 
-
         if Logs.Level.should_log Debug then Printexc.record_backtrace true;
         (* Unix.sleepf (Float.mul (float j) 0.25); *)
         (* let prio = (nr_domains - j - 1) in *)
@@ -380,6 +524,7 @@ struct
        * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)
 
     stop_event ();
+    print_stats ();
     print_data_verbose data "Data after iterate completed";
 
     if GobConfig.get_bool "dbg.print_wpoints" then (
