@@ -87,6 +87,7 @@ end
 module type DefaultType = sig
   type t
   val default: unit -> t
+  val to_string: t -> string
 end
 
 module NormalHMWrapper (H:Hashtbl.HashedType) (D: DefaultType) (HM:Hashtbl.S with type key = H.t) =

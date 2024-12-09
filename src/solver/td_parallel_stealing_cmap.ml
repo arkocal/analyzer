@@ -33,6 +33,7 @@ struct
   module DefaultState = struct
     type t = state
     let default () = {value = S.Dom.bot (); called = Int.max_num; stable = Int.max_num} 
+    let to_string s = Printf.sprintf "called: %d, stable: %d, value: %s" s.called s.stable (S.Dom.show s.value)
   end
 
   module CM = CreateOnlyConcurrentMap (S.Var) (DefaultState) (HM)

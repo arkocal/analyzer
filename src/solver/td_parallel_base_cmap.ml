@@ -10,6 +10,7 @@ open ConstrSys
 open Messages
 
 open Parallel_util
+open Parallel_util_new
 
 module M = Messages
 
@@ -22,6 +23,13 @@ module CasStat = struct
     else
       (Atomic.incr count_failure; false)
 end
+
+(* module DefaultInt = struct *)
+(*   type t = int *)
+(*   let default () = 0 *)
+(* end *)
+
+
 
 module Base : GenericCreatingEqSolver =
   functor (S:CreatingEqConstrSys) ->
@@ -48,9 +56,11 @@ module Base : GenericCreatingEqSolver =
     module DefaultState = struct
       type t = state
       let default = default
+      let to_string s = S.Dom.show s.value
     end
 
-    module CM = CreateOnlyConcurrentMap (S.Var) (DefaultState) (HM)
+    (* module CM = CreateOnlyConcurrentMap (S.Var) (DefaultState) (HM) *)
+    module CM = SafeHashmap (S.Var) (DefaultState) (HM)
 
     let create_empty_data () = CM.create () 
 
@@ -74,6 +84,9 @@ module Base : GenericCreatingEqSolver =
     let solve st vs =
       let nr_domains = GobConfig.get_int "solvers.td3.parallel_domains" in
       let nr_domains = if nr_domains = 0 then (Domain.recommended_domain_count ()) else nr_domains in
+
+      Logs.error "STARTING HERE";
+
 
       (* domain with id 0 is always working. Threadpool initialized with n means domain 0 + n additional domains are working *)
       let pool = Thread_pool.create (nr_domains - 1) in
