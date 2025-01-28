@@ -133,6 +133,7 @@ module Var2 (LV:VarType) (GV:VarType)
 =
 struct
   type t = [ `L of LV.t  | `G of GV.t ] [@@deriving eq, ord, hash]
+
   let relift = function
     | `L x -> `L (LV.relift x)
     | `G x -> `G (GV.relift x)

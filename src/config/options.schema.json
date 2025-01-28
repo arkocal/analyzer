@@ -2,6 +2,12 @@
   "$schema": "http://json-schema.org/draft-04/schema#",
   "type": "object",
   "properties": {
+    "skipcontexthash": {
+      "title": "skipcontexthash",
+      "description": "Ignore context when calculating hash for Locals.",
+      "type": "boolean",
+      "default": false
+    },
     "files": {
       "title": "files",
       "description": "Files to analyze.",

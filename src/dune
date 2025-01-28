@@ -88,7 +88,7 @@
   (public_names goblint)
   (modes byte native) ; https://dune.readthedocs.io/en/stable/dune-files.html#linking-modes
   (modules goblint)
-  (libraries goblint.lib goblint_std)
+  (libraries goblint.lib goblint_std memtrace)
   (preprocess (pps ppx_deriving.std ppx_deriving_hash ppx_deriving_yojson))
   (flags :standard -linkall -open Goblint_std)
 )

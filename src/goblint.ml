@@ -5,6 +5,7 @@ open Maingoblint
 (** the main function *)
 let main () =
   try
+    Memtrace.trace_if_requested ();
     Maingoblint.parse_arguments ();
     Cilfacade.init ();
 

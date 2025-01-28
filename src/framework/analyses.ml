@@ -26,6 +26,11 @@ end
 module VarF (LD: Printable.S) =
 struct
   type t = Node.t * LD.t [@@deriving eq, ord, hash]
+
+  let skip_context_hash = GobConfig.get_bool "skipcontexthash"
+
+  let hash (n,x) = if skip_context_hash then Node.hash n else hash (n, x)
+
   let relift (n,x) = n, LD.relift x
 
   let getLocation (n,d) = Node.location n
