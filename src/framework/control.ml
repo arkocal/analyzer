@@ -278,6 +278,7 @@ struct
         | GVarDecl (v,_) when not (VS.mem v vars || isFunctionType v.vtype) && not (get_bool "exp.hide-std-globals" && is_std v) -> set_bad v s
         | _ -> s
       in
+      Logs.debug "Is hashcons on: %b" (get_bool "ana.opt.hashcons");
       foldGlobals file add_externs (Spec.startstate MyCFG.dummy_func.svar)
     in
 
@@ -826,7 +827,9 @@ struct
     if get_string "result" <> "none" then Logs.debug "Generating output: %s" (get_string "result");
 
     Messages.finalize ();
-    Timing.wrap "result output" (Result.output (lazy local_xml) gh make_global_fast_xml) file
+    Timing.wrap "result output" (Result.output (lazy local_xml) gh make_global_fast_xml) file;
+    if (get_bool "restart.enabled") then
+      raise Restart.RestartAnalysis
 end
 
 (* This function was originally a part of the [AnalyzeCFG] module, but
@@ -835,16 +838,36 @@ end
    [get_spec] in the loop might/should return a different module, and we
    cannot swap the functor parameter from inside [AnalyzeCFG]. *)
 let rec analyze_loop (module CFG : CfgBidirSkip) file fs change_info =
+  let setConf () =
+    if (get_bool "restart.enabled") then
+      let conflist = get_string_list "restart.conflist" in
+      Logs.debug "RESTARTING";
+      match conflist with 
+      | [] -> failwith "empty conflist"
+      | [x] -> set_bool "restart.enabled" false; merge_file (Fpath.v x); set_string "save_run" "restartRun1"; Logs.debug "conflist: %s" x
+      | x::xs -> set_string "restart.conflist[-]" x; merge_file (Fpath.v x); set_string "save_run" "restartRun0"; Logs.debug "conflist: %s" x
+  in
   try
     let (module Spec) = get_spec () in
     let module A = AnalyzeCFG (CFG) (Spec) (struct let increment = change_info end) in
+    let sighandle = Sys.Signal_handle (fun _ -> raise Restart.RestartTimeout) in
+    if (get_bool "restart.enabled") then (
+      setConf ();
+      Sys.set_signal Sys.sigalrm sighandle;
+      ignore (Unix.alarm 10)
+    );
     GobConfig.with_immutable_conf (fun () -> A.analyze file fs)
-  with Refinement.RestartAnalysis ->
+  with 
+  | Refinement.RestartAnalysis ->
     (* Tail-recursively restart the analysis again, when requested.
         All solving starts from scratch.
         Whoever raised the exception should've modified some global state
         to do a more precise analysis next time. *)
     (* TODO: do some more incremental refinement and reuse parts of solution *)
+    analyze_loop (module CFG) file fs change_info
+  | Restart.RestartAnalysis ->
+    analyze_loop (module CFG) file fs change_info
+  | Restart.RestartTimeout ->
     analyze_loop (module CFG) file fs change_info
 
 (** The main function to perform the selected analyses. *)

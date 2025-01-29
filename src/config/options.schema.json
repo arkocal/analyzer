@@ -2693,6 +2693,27 @@
         }
       },
       "additionalProperties": false
+    },
+    "restart": {
+      "title": "restart",
+      "description": "Change config and restart analysis",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "title": "restart.enabled",
+          "description": "Turn on restarting with changed config",
+          "type": "boolean",
+          "default": false
+        },
+        "conflist": {
+          "title": "restart.conflist",
+          "description": "List of configurations to use after each restart",
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false
