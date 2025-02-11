@@ -506,6 +506,13 @@
               "type": "boolean",
               "default": true
             },
+            "hashcached": {
+              "title": "ana.opt.hashcached",
+              "description":
+                "Should we try to save memory and speed up equality by cachingh hashes?",
+              "type": "boolean",
+              "default": true
+            },
             "equal": {
               "title": "ana.opt.equal",
               "description":

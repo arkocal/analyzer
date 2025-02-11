@@ -176,6 +176,8 @@ struct
 
   let lift m = {m; lazy_hash = LazyHash.make m}
   let unlift {m; _} = m
+  (* TODO figure out what this should actually do *)
+  let relift x = x
 
   let lift_f f x = f (unlift x)
   let lift_f' f x = lift @@ lift_f f x

@@ -2,6 +2,35 @@ open Batteries
 open ConstrSys
 open GobConfig  
 
+
+module AtomicLinkedList =
+struct
+  type 'a node = {
+    value: 'a;
+    next: 'a node option Atomic.t; (* TODO: a normal mutable field could be enough *)
+  }
+  type 'a t = {
+    head: 'a node option Atomic.t;
+    last: 'a node option Atomic.t;
+  }
+  let create () = { head = Atomic.make None; last = Atomic.make None }
+
+  let rec append linked_list value =
+    let new_node = { value; next = Atomic.make None } in
+    
+    let current_last = Atomic.get linked_list.last in
+    match current_last with
+    | None -> 
+      let success = Atomic.compare_and_set linked_list.last None (Some new_node) in
+      if not success then append linked_list value
+      else Atomic.set linked_list.head (Some new_node);
+    | Some last_node -> 
+      let success = Atomic.compare_and_set linked_list.last current_last (Some new_node) in
+      if not success then append linked_list value
+      else Atomic.set last_node.next (Some new_node)
+end
+
+
 module LockableHashtbl (H:Hashtbl.HashedType) (HM:Hashtbl.S with type key = H.t) = 
 struct
   type key = HM.key
@@ -296,12 +325,12 @@ struct
   let eval_rhs_event thread_id x =
     if tracing && full_trace then trace "sol" "(Re-)evaluating %a" Var.pretty_trace x;
     Atomic.incr evals;
-    Atomic.incr evals_by_thread.(thread_id);
+    (* Atomic.incr evals_by_thread.(thread_id); *)
     if (get_bool "dbg.solver-progress") then (Atomic.incr stack_d; Logs.debug "%d" @@ Atomic.get stack_d)
 
   let update_var_event thread_id x o n =
     Atomic.incr updates;
-    Atomic.incr updates_by_thread.(thread_id);
+    (* Atomic.incr updates_by_thread.(thread_id); *)
     if tracing then increase x;
     if full_trace || (not (Dom.is_bot o) && GobOption.exists (Var.equal x) !max_var) then begin
       if tracing then tracei "sol_max" "(%d) Update to %a" !max_c Var.pretty_trace x;

@@ -95,7 +95,9 @@ module Base : GenericCreatingEqSolver =
       in
 
       let () = print_solver_stats := fun () ->
-          print_data data
+          Logs.info "no stats"
+
+          (* print_data data *)
           (*Logs.info "|called|=%d" (LHM.length called);
             print_context_stats @@ LHM.to_hashtbl rho*)
       in
@@ -371,7 +373,7 @@ module Base : GenericCreatingEqSolver =
 
       print_stats ();
       stop_event ();
-      print_data_verbose data "Data after iterate completed";
+      (* print_data_verbose data "Data after iterate completed"; *)
 
       let t = Unix.gettimeofday () in
       let data_ht = CM.to_hashtbl data in
