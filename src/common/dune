@@ -16,7 +16,8 @@
    fpath
    yojson
    goblint_timing
-   qcheck-core.runner)
+   qcheck-core.runner
+   domain-local-await)
  (flags :standard -open Goblint_std -open Goblint_logs)
  (foreign_stubs (language c) (names stubs))
  (ocamlopt_flags :standard -no-float-const-prop)
