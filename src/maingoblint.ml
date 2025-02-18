@@ -164,6 +164,21 @@ let check_arguments () =
   );
   if get_bool "solvers.td3.space" && get_bool "solvers.td3.remove-wpoint" then fail "solvers.td3.space is incompatible with solvers.td3.remove-wpoint";
   if get_bool "solvers.td3.space" && get_string "solvers.td3.side_widen" = "sides-local" then fail "solvers.td3.space is incompatible with solvers.td3.side_widen = 'sides-local'";
+  if String.starts_with (get_string "solver") "td_parallel" || get_string "solver" = "td_simplified" then (
+    Logs.info "The constraint system will be solved with a parallelized solver.";
+    (* all parallel solvers unsupported *)
+    if get_bool "allfuns" || get_bool "nonstatic" then fail "Parallel solvers cannot solve for multiple variables. Thus they are incompatible with 'allfuns' and 'nonstatic'.";
+    if get_bool "ana.opt.hashcons" then (set_bool "ana.opt.hashcons" false; warn "Hashconsing is disabled when using a parallelized solver!");
+    if get_bool "solvers.td3.space" then warn "Option 'solvers.td3.space' is not supported for parallelized solvers and will be ignored.";
+    if get_bool "incremental.load" then warn "Parallelized solvers do not support incremental loading. Loaded data will be ignored.";
+    if get_bool "solvers.td3.verify" then warn "Option 'solvers.td3.verify' is not supported for parallelized solvers and will be ignored.";
+    if get_bool "solvers.td3.restart.wpoint.enabled" then warn "Restarting wpoints is not supported parallelized solvers. Corresponding options will be ignored.";
+    if get_string "solvers.td3.side_widen" <> "always" then warn "Parallelized solvers only support always widening for sides. Differing options for side widening are ignored.";
+    (* specific parallel solvers unsupported*)
+    if get_string "solver" = "td_parallel_stealing" then (
+      if get_bool "solvers.td3.term" then warn "The solver 'td_parallel_stealing' does not support Widening and Narrowing phases implied by 'solvers.td3.term'"
+    )
+  );
   if List.mem "termination" @@ get_string_list "ana.activated" then (
     if GobConfig.get_bool "incremental.load" || GobConfig.get_bool "incremental.save" then fail "termination analysis is not compatible with incremental analysis";
     set_list "ana.activated" (GobConfig.get_list "ana.activated" @ [`String ("threadflag")]);
