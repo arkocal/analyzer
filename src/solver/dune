@@ -12,7 +12,8 @@
    goblint_domain
    goblint_constraint
    goblint_incremental
-   goblint-cil)
+   goblint-cil
+   domainslib)
  (flags :standard -open Goblint_std -open Goblint_logs)
  (preprocess
   (pps
