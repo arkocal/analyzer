@@ -838,21 +838,12 @@ end
    [get_spec] in the loop might/should return a different module, and we
    cannot swap the functor parameter from inside [AnalyzeCFG]. *)
 let rec analyze_loop (module CFG : CfgBidirSkip) file fs change_info =
-  let setConf () =
-    if (get_bool "restart.enabled") then
-      let conflist = get_string_list "restart.conflist" in
-      Logs.debug "RESTARTING";
-      match conflist with 
-      | [] -> failwith "empty conflist"
-      | [x] -> set_bool "restart.enabled" false; merge_file (Fpath.v x); set_string "save_run" "restartRun1"; Logs.debug "conflist: %s" x
-      | x::xs -> set_string "restart.conflist[-]" x; merge_file (Fpath.v x); set_string "save_run" "restartRun0"; Logs.debug "conflist: %s" x
-  in
   try
     let (module Spec) = get_spec () in
     let module A = AnalyzeCFG (CFG) (Spec) (struct let increment = change_info end) in
     let sighandle = Sys.Signal_handle (fun _ -> raise Restart.RestartTimeout) in
     if (get_bool "restart.enabled") then (
-      setConf ();
+      Restart.setConf ();
       Sys.set_signal Sys.sigalrm sighandle;
       ignore (Unix.alarm 10)
     );
