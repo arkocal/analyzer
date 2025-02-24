@@ -54,6 +54,7 @@ depends: [
   "csexp" {= "1.5.2"}
   "cstruct" {= "6.2.0"}
   "ctypes" {= "0.22.0"}
+  "domainslib" {= "0.3.2"}
   "domain-local-await" {= "1.0.1"}
   "domain_shims" {= "0.1.0"}
   "dune" {= "3.16.0"}
