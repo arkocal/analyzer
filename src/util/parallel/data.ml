@@ -1,5 +1,15 @@
 open Batteries
 
+module CasWithStat = struct
+  let count_success = Atomic.make 0
+  let count_failure = Atomic.make 0
+  let cas key old new_ =
+    if Atomic.compare_and_set key old new_ then
+      (Atomic.incr count_success; true)
+    else
+      (Atomic.incr count_failure; false)
+end
+
 module type DefaultType = sig
   type t
   val default: unit -> t
