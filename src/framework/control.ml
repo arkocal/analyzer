@@ -278,7 +278,6 @@ struct
         | GVarDecl (v,_) when not (VS.mem v vars || isFunctionType v.vtype) && not (get_bool "exp.hide-std-globals" && is_std v) -> set_bad v s
         | _ -> s
       in
-      Logs.debug "Is hashcons on: %b" (get_bool "ana.opt.hashcons");
       foldGlobals file add_externs (Spec.startstate MyCFG.dummy_func.svar)
     in
 
