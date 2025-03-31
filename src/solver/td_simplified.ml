@@ -85,7 +85,7 @@ module Base : GenericEqSolver =
         tmp
 
       and side x y d = (* side from x to y; only to variables y w/o rhs; x only used for trace *)
-        if tracing then trace "side" "side to %a (wpx: %b) from %a; value: %a" S.Var.pretty_trace y (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
+        if tracing then trace "side" "side to %a (wpx: %b) \nfrom %a;\n value: %a" S.Var.pretty_trace y (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty d;
         assert (S.system y = None);
         init y;
         let widen a b =
@@ -98,7 +98,7 @@ module Base : GenericEqSolver =
         let tmp = op old d in
         HM.replace stable y ();
         if not (S.Dom.leq tmp old) then (
-          if tracing && not (S.Dom.is_bot old) then trace "update" "side to %a (wpx: %b) from %a new: %a" S.Var.pretty_trace y (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty tmp;
+          if tracing && not (S.Dom.is_bot old) then trace "supdate" "side to %a (wpx: %b) from %a new: %a" S.Var.pretty_trace y (HM.mem wpoint y) S.Var.pretty_trace x S.Dom.pretty tmp;
           HM.replace rho y tmp;
           destabilize y;
           (* make y a widening point. This will only matter for the next side _ y.  *)

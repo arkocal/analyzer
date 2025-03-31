@@ -30,7 +30,10 @@ module CasWithStatAndException = struct
     if Atomic.compare_and_set key old new_ then
       Atomic.incr count_success
     else
-      raise CasFailException
+      begin
+        Atomic.incr count_failure;
+        raise CasFailException
+      end
 end
 
 module Base : GenericCreatingEqSolver =
@@ -54,13 +57,16 @@ module Base : GenericCreatingEqSolver =
         stable: bool;
         called: bool;
         root: bool; (** If this variable was the starting point of a solver thread *)
+        id: int; (** Just for experimentation *)
       }
-      let default () = {value = S.Dom.bot (); infl = VS.empty; called = false; stable = false; wpoint = false; root = false}
+      let default () = {value = S.Dom.bot (); infl = VS.empty; called = false; stable = false; wpoint = false; root = false; id=0}
       let to_string s = S.Dom.show s.value
     end
 
     (** Concurrency safe hashmap for the state of the unknowns. *)
     module CM = Data.SafeHashmap (S.Var) (DefaultState) (HM)
+
+    let var_count = Atomic.make 0
 
     let create_empty_data () = CM.create () 
 
@@ -77,9 +83,9 @@ module Base : GenericCreatingEqSolver =
     let cas = Data.CasWithStat.cas
 
     let print_data data =
-      Logs.debug "CAS success: %d" (Atomic.get Data.CasWithStat.count_success);
-      Logs.debug "CAS failure: %d" (Atomic.get Data.CasWithStat.count_failure);
-      Logs.debug "CAS success rate: %f" (float_of_int (Atomic.get Data.CasWithStat.count_success) /. (float_of_int (Atomic.get Data.CasWithStat.count_success + Atomic.get Data.CasWithStat.count_failure)))
+      Logs.info "CAS success: %d" (Atomic.get CasWithStatAndException.count_success);
+      Logs.info "CAS failure: %d" (Atomic.get CasWithStatAndException.count_failure);
+      Logs.info "CAS success rate: %f" (float_of_int (Atomic.get CasWithStatAndException.count_success) /. (float_of_int (Atomic.get CasWithStatAndException.count_success + Atomic.get CasWithStatAndException.count_failure)))
 
     let print_data_verbose data str =
       if Logs.Level.should_log Debug then (
@@ -108,6 +114,9 @@ module Base : GenericCreatingEqSolver =
       let init x thread_id =
         let value, was_created = CM.find_create data x in
         if (was_created) then new_var_event thread_id x;
+        let var_id = Atomic.fetch_and_add var_count 1 in
+        let s = Atomic.get value in
+        Atomic.set value {s with id = var_id};
         value
       in
 
@@ -176,7 +185,7 @@ module Base : GenericCreatingEqSolver =
               if tracing then trace "thread_pool" "starting task %d to iterate %a" job_id S.Var.pretty_trace y;
               thread_starts_solve_event job_id;
               let inner_prom = ref [] in
-              iterate None inner_prom y job_id y_atom;
+              iterate None inner_prom y [] job_id y_atom;
               HM.remove unknowns_with_running_jobs y;
               thread_ends_solve_event job_id;
               Thread_pool.await_all pool (!inner_prom);
@@ -199,13 +208,14 @@ module Base : GenericCreatingEqSolver =
           @param job_id The id of the thread that is solving for x.
           @param x_atom The atomic reference to the state of x, to prevent unnecessary lookups.
       *)
-      and iterate orig prom x job_id x_atom = (* ~(inner) solve in td3*)
+      and iterate orig prom x ichain job_id x_atom = (* ~(inner) solve in td3*)
 
         (** Get the value for y, triggering an iteration if necessary, and performing a lookup otherwise. 
             @param x The variable whose query led to the query for y, so that the infl of y can be updated.
             @param y The variable to get the value for.
             @return The value of y.
         *)
+
         let rec query x y = (* ~eval in td3 *)
           (* Query with atomics: if anything is changed, query is repeated and the initial call *)
           (* has no side effects. Thus, imitating that the query just happend in a later point in time.*)
@@ -233,7 +243,8 @@ module Base : GenericCreatingEqSolver =
               ) else (
                 if tracing then trace "infl" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
                 cas y_atom y_state {y_state_with_infl with stable = true; called=true};
-                iterate (Some x) prom y job_id y_atom;
+                let ichain = y_state.id :: ichain in
+                iterate (Some x) prom y ichain job_id y_atom;
                 (Atomic.get y_atom).value
               )
             ) ) with CasFailException -> query x y
@@ -281,9 +292,19 @@ module Base : GenericCreatingEqSolver =
         in
 
         (* begining of iteration to update the value for x *)
+        (* let ichain_as_string = List.fold_left (fun acc x -> acc ^ (string_of_int x) ^ ".") "" in  *)
+        (* if tracing then trace "ichain" "%s" (ichain_as_string ichain); *)
         assert (not @@ is_global x);
         let cas = CasWithStatAndException.cas in
         let x_state = Atomic.get x_atom in
+
+        (match orig with
+           Some orig -> begin
+             let orig_atom = CM.find data orig in
+             let orig_state = Atomic.get orig_atom in
+             if tracing then trace "ilink" "%d,%d" orig_state.id x_state.id;
+           end
+         | None -> ());
         if tracing then trace "iter" "%d iterate %a, stable: %b, wpoint: %b" job_id S.Var.pretty_trace x x_state.stable x_state.wpoint;
         let x_is_widening_point = x_state.wpoint in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
         eval_rhs_event job_id x;
@@ -302,13 +323,13 @@ module Base : GenericCreatingEqSolver =
               | Some z -> (VS.add z x_state.infl)
               | None -> x_state.infl in
             let x_state_new = {x_state with infl = infl; called = false; wpoint = false} in
-            try (cas x_atom x_state x_state_new ) with CasFailException -> (iterate[@tailcall]) orig prom x job_id x_atom;
+            try (cas x_atom x_state x_state_new ) with CasFailException -> (iterate[@tailcall]) orig prom x ichain job_id x_atom;
           ) else (
             let x_state_new = {x_state with stable = true} in
             (* No need to track cas success, as we will iterate again anyway. *)
             ignore @@ Atomic.compare_and_set x_atom x_state x_state_new;
             if tracing then trace "iter" "iterate still unstable %a" S.Var.pretty_trace x;
-            (iterate[@tailcall]) orig prom x job_id x_atom
+            (iterate[@tailcall]) orig prom x ichain job_id x_atom
           )
         ) else (
           (* value has changed *)
@@ -336,11 +357,11 @@ module Base : GenericCreatingEqSolver =
                 let success = Atomic.compare_and_set x_atom x_state new_s in 
                 if success then (
                   if tracing then trace "iter" "iterate changed %a" S.Var.pretty_trace x;
-                  (iterate[@tailcall]) orig prom x job_id x_atom
+                  (iterate[@tailcall]) orig prom x ichain job_id x_atom
                 ) else (finalize[@tailcall]) ()
               ) in
             finalize ();
-          ) with CasFailException -> (iterate[@tailcall]) orig prom x job_id x_atom;
+          ) with CasFailException -> (iterate[@tailcall]) orig prom x ichain job_id x_atom;
         ) in
 
       let set_start (x,d) =
@@ -350,6 +371,7 @@ module Base : GenericCreatingEqSolver =
       in
 
       (* beginning of main solve *)
+
       start_event ();
 
       List.iter set_start st;
@@ -388,6 +410,7 @@ module Base : GenericCreatingEqSolver =
       (* After termination, only those variables are stable which are
        * - reachable from any of the queried variables vs, or
        * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)
+      print_data ();
       print_stats ();
       stop_event ();
 

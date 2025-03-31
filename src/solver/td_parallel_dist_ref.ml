@@ -1,9 +1,19 @@
 (** Terminating, parallelized top-down solver with side effects. ([td_parallel_dist]).*)
 
-(** Top down solver that is parallelized. TODO: better description *)
+(** Top-down solver that is parallelised with as little shared data as possible 
+  * 
+  * The solver consists of multiple threads, that each have their own copies of unknown data.
+  * The solvers starts with a single thread, and starts a new one at every `create` call it encounters.
+  * Create nodes are created by the analysis. For the correctness of this solver, they can be placed anywhere,
+  * however the solver benefits from having those at points where the analysis branches into mostly 
+  * disjunt parts, such as thread creation in the analysed program.
+  * Changes to global unknowns are posted to an update queue, which is consumed by every running thread
+  * after every RHS evaluation.
+  * If the root unknown of a variable is destabilized after termination, the thread is restarted. 
+*)
 (* Options:
- * - solvers.td3.parallel_domains (default: 0 - automatic selection): Maximal number of Domains that the thread-pool of the solver can use in parallel.
- * TODO: support 'solvers.td3.remove-wpoint' option? currently it acts as if this option was always enabled *)
+ * - solvers.td3.parallel_domains (default: 0 - automatic selection): Maximal number of Domains that the solver can use in parallel.
+*)
 
 open Batteries
 open ConstrSys
@@ -19,93 +29,11 @@ module Base : GenericCreatingEqSolver =
   functor (HM:Hashtbl.S with type key = S.v) ->
   struct
     open SolverBox.Warrow (S.Dom)
-    (* TODO: Maybe different solver stats according for CreatingEQsys is needed *)
-    (* include Generic.SolverStats (EqConstrSysFromCreatingEqConstrSys (S)) (HM) *)
 
     module VS = Set.Make (S.Var)
     module Thread_pool = Threadpool.Thread_pool
 
     open ParallelSolverStats (EqConstrSysFromCreatingEqConstrSys (S)) (HM)
-
-
-    (* The following contains a possible refactoring of the sides module as a general update queue *)
-
-    (* These are theoretically not sides but updates in general: For writing: formalize required properties *)
-    (* TODO: This could be instance based, with a type t, and create: unit -> t *)
-    (* module type Updates = sig *)
-    (*   type bookmark *)
-    (*   type entry *)
-    (**)
-    (*   (** [produce ~callback entry] adds [entry] to the list of updates.  *)
-         (*       [callback] is called after the update is added. *) *)
-    (*   val produce: callback:(unit -> unit) -> entry -> unit *)
-    (*   (** [consume bookmark ~consumer] consumes all updates that were produced  *)
-         (*       after [bookmark], and returns a new bookmark marking the last consumed update. *) *)
-    (*   val consume: bookmark -> consumer:(entry -> unit) -> bookmark *)
-    (*   (** [start_bookmark ()] returns a bookmark that marks the beginning of updates. *) *)
-    (*   val start_bookmark: unit -> bookmark *)
-    (**)
-    (*   (** [finish bookmark ~finalizer] finalize if no updates are left. *) *)
-    (*   val finish: bookmark -> finalizer:(unit -> unit) -> bool *)
-    (* end *)
-    (**)
-    (* (* module SideUpdates: Updates = struct *) *)
-    (* module SideUpdates = struct *)
-    (*   type bookmark = int *)
-    (*   type 'a t = { *)
-    (*     mutable next_obs_index: bookmark; *)
-    (*     mutex: GobMutex.t; *)
-    (*     mutable updates: (bookmark*'a) list; *)
-    (*   } *)
-    (*   type entry = S.Var.t * S.Dom.t *)
-    (*   type list_entry = bookmark * entry *)
-    (**)
-    (*   let next_obs_index = ref 1 *)
-    (*   let (updates : list_entry list ref) = ref [] *)
-    (**)
-    (*   let start_bookmark () = 0 *)
-    (**)
-    (*   let mutex = GobMutex.create () *)
-    (**)
-    (*   let produce redo_prelim ((v,_) as side) = *)
-    (*     GobMutex.lock mutex; *)
-    (*     (* if tracing then trace "side_add" "%d adding side to %a (obs index: %d)" thread_id S.Var.pretty_trace v !next_obs_index; *) *)
-    (*     updates := (!next_obs_index, side) :: !updates; *)
-    (*     incr next_obs_index; *)
-    (*     redo_prelim (); *)
-    (*     GobMutex.unlock mutex *)
-    (**)
-    (*   (* Process all existing updates via f *) *)
-    (*   (* id is the thread ID *) *)
-    (*   (* Returns the new observation index *) *)
-    (*   let consume last_obs_index f = *)
-    (*     GobMutex.lock mutex; *)
-    (*     let current_sides = !updates in *)
-    (*     let new_bookmark = !next_obs_index-1 in *)
-    (*     GobMutex.unlock mutex; *)
-    (*     Seq.of_list current_sides  *)
-    (*       |> Seq.take_while (fun (o,_) -> o <> last_obs_index)  *)
-    (*       |> Seq.iter (fun (_, side) -> f side); *)
-    (*     (* if tracing then trace "process_update" "%d processed sides %d to %d" thread_id (last_obs_index) (obs'); *) *)
-    (*     new_bookmark *)
-    (**)
-    (*   (* Returns if we have updates or if we are finished *) *)
-    (*   (* Unknowns must be marked as preliminary, even if all updates are accounted for *) *)
-    (*   (* since new updates might come later *) *)
-    (*   let finish obs mark_prelim = *)
-    (*     GobMutex.lock mutex; *)
-    (*     if !next_obs_index-1 <> obs then *)
-    (*       begin *)
-    (*         GobMutex.unlock mutex;  *)
-    (*         false *)
-    (*       end *)
-    (*     else *)
-    (*       begin *)
-    (*         mark_prelim (); *)
-    (*         GobMutex.unlock mutex; *)
-    (*         true *)
-    (*       end *)
-    (* end *)
 
     module type Sides = sig
       type obs_bookmark
@@ -119,19 +47,26 @@ module Base : GenericCreatingEqSolver =
       val updates_or_fin: int -> obs_bookmark -> (unit -> unit) -> remaining_status
     end
 
+    let sides_registered = Atomic.make 0
+    let sides_processed = Atomic.make 0
+
     (* TODO: I am not sure if the data structure currently used is the best solution *)
     (* It is kind of difficult to manage the indices *)
     (* We could use a lock-free linked list and remember the element that was processed last *)
     (* An AtomicLinkedList is already defined in parallel_util.ml *)
-    module Sides: Sides = struct
+    module OldSides: Sides = struct
+      (** Each solver thread keeps a bookmark of the last processed updates,
+          so that it can stop processing the updates once that point in the
+          queue is reached *)
       type obs_bookmark = int
+      (** Return value representing if all updates are already processed *)
       type remaining_status = NewSide | Fin
       type side_effect = S.Var.t * S.Dom.t
       type side_entry = obs_bookmark * side_effect
-      (* Index of the next observation  *)
-      (* This is used to determine if we have processed all sides *)
+      (** Index of the next observation, used to determine if we have processed all sides *)
       let next_obs_index = ref 1
-      (* This is defined once module-wise, and not per solver thread *)
+      (** List of all registered side effects.
+          This is defined once module-wise, and not per solver thread *)
       let (sides : side_entry list ref) = ref []
       let no_observations () = 0
 
@@ -141,6 +76,7 @@ module Base : GenericCreatingEqSolver =
       let add_side thread_id resolve ((v,_) as side) =
         GobMutex.lock mutex;
         if tracing then trace "side_add" "%d adding side to %a (obs index: %d)" thread_id S.Var.pretty_trace v !next_obs_index;
+        Atomic.incr sides_registered;
         sides := (!next_obs_index, side) :: !sides;
         incr next_obs_index;
         resolve ();
@@ -154,20 +90,9 @@ module Base : GenericCreatingEqSolver =
         let current_sides = !sides in
         let obs' = !next_obs_index-1 in
         GobMutex.unlock mutex;
-        (* let rec process = function *)
-        (*   | [] -> () *)
-        (*   | (o,_)::_ when o = last_obs_index -> ()  (* Skip already processed sides at the end *) *)
-        (*   | (_, side)::tl -> ( *)
-        (*     f side;  *)
-        (*     process tl *)
-        (*   ) *)
-        (* in *)
-        (* process current_sides; *)
-        (* same as above with seqs: *)
-        (* TODO: ensure this is actually correct *)
         Seq.of_list current_sides 
         |> Seq.take_while (fun (o,_) -> o <> last_obs_index) 
-        |> Seq.iter (fun (_, side) -> f side);
+        |> Seq.iter (fun (_, side) -> Atomic.incr sides_processed; f side);
         if tracing then trace "process_update" "%d processed sides %d to %d" thread_id (last_obs_index) (obs');
         obs'
 
@@ -181,18 +106,60 @@ module Base : GenericCreatingEqSolver =
           else (mark_prelim (); Fin) in
         GobMutex.unlock mutex;
         result
-        (* if !next_obs_index-1 <> obs then *)
-        (*   begin *)
-        (*     GobMutex.unlock mutex;  *)
-        (*     NewSide *)
-        (*   end *)
-        (* else *)
-        (*   begin *)
-        (*     mark_prelim (); *)
-        (*     GobMutex.unlock mutex; *)
-        (*     Fin *)
-        (*   end *)
     end
+
+    module LockFreeSides: Sides = struct
+      (** Each solver thread keeps a bookmark of the last processed updates,
+          so that it can stop processing the updates once that point in the
+          queue is reached *)
+      type obs_bookmark = int
+      (** Return value representing if all updates are already processed *)
+      type remaining_status = NewSide | Fin
+      type side_effect = S.Var.t * S.Dom.t
+      type side_entry = obs_bookmark * side_effect
+
+      type entry_node = LFin | Next of (side_entry * entry_node)
+
+      let (head : entry_node Atomic.t) = Atomic.make LFin
+
+      (* val add_side: int -> (unit -> unit) -> side_effect -> unit *)
+      (* Resolve is used to create threads for preliminary unknowns. *)
+      let rec add_side thread_id resolve ((v,_) as side) =
+        (* if tracing then trace "side_add" "%d adding side to %a (obs index: %d)" thread_id S.Var.pretty_trace v !(Atomic.get next_obs_index); *)
+        let old_head = Atomic.get head in
+        let new_head = match old_head with
+            LFin -> Next ((1, side), LFin)
+          | (Next ((bookmark, _), _) as old) -> Next ((bookmark + 1, side), old) in 
+        let success = Atomic.compare_and_set head old_head new_head in
+        if success then (Atomic.incr sides_registered; resolve) () else add_side thread_id resolve side
+
+      let no_observations () = 0
+
+      let rec seq_of_updates head () =
+        match head with
+          LFin -> Seq.Nil
+        | Next (entry, rest) -> Seq.Cons (entry, seq_of_updates rest)
+
+      let process_updates thread_id last_obs_bookmark f =
+        let head_value = Atomic.get head in
+        let new_bookmark = match head_value with
+          | LFin -> 0
+          | Next ((bookmark, _), _) -> bookmark in
+        seq_of_updates head_value
+        |> Seq.take_while (fun (o,_) -> o <> last_obs_bookmark) 
+        |> Seq.iter (fun (_, side) -> (Atomic.incr sides_processed; f side));
+        if tracing then trace "process_update" "%d processed sides %d to %d" thread_id (last_obs_bookmark) (new_bookmark);
+        new_bookmark
+
+      let updates_or_fin thread_id observation_bookmark mark_prelim =
+        let head_value = Atomic.get head in
+        match head_value with
+          LFin -> (mark_prelim (); Fin)
+        | Next ((bookmark, _), _) -> 
+          if observation_bookmark <> bookmark then NewSide else (mark_prelim (); Fin)
+    end
+
+    module Sides = LockFreeSides
 
     type unknown_data = {
       infl: VS.t;
@@ -285,11 +252,11 @@ module Base : GenericCreatingEqSolver =
       let job_id_counter = (Atomic.make 1) in
 
       (* TODO: make something reasonable out of this
-         let () = print_solver_stats := fun () ->
-          print_data data;
-          Logs.info "|called|=%d" (HM.length called);
-          print_context_stats rho
-         in *)
+           let () = print_solver_stats := fun () ->
+            print_data data;
+            Logs.info "|called|=%d" (HM.length called);
+            print_context_stats rho
+           in *)
 
       (* prepare start_rho and start_stable here to have it available to all tasks *)
       (* These are start points in the analzed code, such as the main main function *)
@@ -561,18 +528,21 @@ module Base : GenericCreatingEqSolver =
       solver ();
       Thread_pool.finished_with pool;
       (* After termination, only those variables are stable which are
-       * - reachable from any of the queried variables vs, or
-       * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)
+         * - reachable from any of the queried variables vs, or
+         * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)
+      Logs.error "Sides registered %d" (Atomic.get sides_registered);
+      Logs.error "Sides processed %d" (Atomic.get sides_processed);
+      Logs.error "Job id counter: %d" (Atomic.get job_id_counter);
 
       stop_event ();
       (*print_data_verbose data "Data after iterate completed";
 
-        if GobConfig.get_bool "dbg.print_wpoints" then (
-        Logs.newline ();
-        Logs.debug "Widening points:";
-        HM.iter (fun k () -> Logs.debug "%a" S.Var.pretty_trace k) wpoint;
-        Logs.newline ();
-        );*)
+          if GobConfig.get_bool "dbg.print_wpoints" then (
+          Logs.newline ();
+          Logs.debug "Widening points:";
+          HM.iter (fun k () -> Logs.debug "%a" S.Var.pretty_trace k) wpoint;
+          Logs.newline ();
+          );*)
 
       (* TODO: make a better merge here*)
       if tracing then trace "dbg_para" "suspended_vars: %d" (List.length !prelim_vars);

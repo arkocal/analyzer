@@ -21,11 +21,15 @@ struct
   let instant_returns = Atomic.make 0
   let thread_starts = Atomic.make 0
   let thread_creates = Atomic.make 0
+  let thread_start_times = Array.init maximal_number_of_threads (fun _ -> 0.0)
+  let thread_end_times = Array.init maximal_number_of_threads (fun _ -> 0.0)
 
   let active_threads = Atomic.make 0
   let first_thread_activation_time = Atomic.make 0.0
   let last_thread_activation_update_time = Atomic.make 0.0
   let total_thread_activation_time = Atomic.make 0.0
+  
+  let iterations = Atomic.make 0
 
   let updates = Atomic.make 0
   let updates_by_thread = Array.init maximal_number_of_threads (fun _ -> Atomic.make 0)
@@ -88,44 +92,46 @@ struct
   let rec thread_starts_solve_event thread_id =
     Atomic.incr thread_starts;
     let t = Unix.gettimeofday () in
-    if (Atomic.get first_thread_activation_time) = 0.0 then 
-      begin
-        let success = Atomic.compare_and_set first_thread_activation_time 0.0 t in
-        if (not success) then thread_starts_solve_event thread_id
-        else (
-          Atomic.set last_thread_activation_update_time t;
-          Atomic.incr active_threads;
-        )
-      end
-    else (
-      let last_thread_activation_update_time_f = Atomic.get last_thread_activation_update_time in
-      let success = Atomic.compare_and_set last_thread_activation_update_time last_thread_activation_update_time_f t in
-      if (not success) then thread_starts_solve_event thread_id
-      else
-        begin
-          let time_diff = t -. last_thread_activation_update_time_f in
-          let cpu_time_since_last_update = time_diff *. (float_of_int @@ Atomic.get active_threads) in
-          let current_total_thread_activation_time = Atomic.get total_thread_activation_time in
-          let new_total_thread_activation_time = current_total_thread_activation_time +. cpu_time_since_last_update in
-          Atomic.set total_thread_activation_time new_total_thread_activation_time;
-          Atomic.incr active_threads;
-        end
-    )
+    thread_start_times.(thread_id) <- t
+    (* if (Atomic.get first_thread_activation_time) = 0.0 then  *)
+    (*   begin *)
+    (*     let success = Atomic.compare_and_set first_thread_activation_time 0.0 t in *)
+    (*     if (not success) then thread_starts_solve_event thread_id *)
+    (*     else ( *)
+    (*       Atomic.set last_thread_activation_update_time t; *)
+    (*       Atomic.incr active_threads; *)
+    (*     ) *)
+    (*   end *)
+    (* else ( *)
+    (*   let last_thread_activation_update_time_f = Atomic.get last_thread_activation_update_time in *)
+    (*   let success = Atomic.compare_and_set last_thread_activation_update_time last_thread_activation_update_time_f t in *)
+    (*   if (not success) then thread_starts_solve_event thread_id *)
+    (*   else *)
+    (*     begin *)
+    (*       let time_diff = t -. last_thread_activation_update_time_f in *)
+    (*       let cpu_time_since_last_update = time_diff *. (float_of_int @@ Atomic.get active_threads) in *)
+    (*       let current_total_thread_activation_time = Atomic.get total_thread_activation_time in *)
+    (*       let new_total_thread_activation_time = current_total_thread_activation_time +. cpu_time_since_last_update in *)
+    (*       Atomic.set total_thread_activation_time new_total_thread_activation_time; *)
+    (*       Atomic.incr active_threads; *)
+    (*     end *)
+    (* ) *)
 
   let rec thread_ends_solve_event thread_id =
     let t = Unix.gettimeofday () in
-    let last_thread_activation_update_time_f = Atomic.get last_thread_activation_update_time in
-    let success = Atomic.compare_and_set last_thread_activation_update_time last_thread_activation_update_time_f t in
-    if (not success) then thread_ends_solve_event thread_id
-    else
-      begin
-        let time_diff = t -. last_thread_activation_update_time_f in
-        let cpu_time_since_last_update = time_diff *. (float_of_int @@ Atomic.get active_threads) in
-        let current_total_thread_activation_time = Atomic.get total_thread_activation_time in
-        let new_total_thread_activation_time = current_total_thread_activation_time +. cpu_time_since_last_update in
-        Atomic.set total_thread_activation_time new_total_thread_activation_time;
-        Atomic.decr active_threads;
-      end
+    thread_end_times.(thread_id) <- t
+    (* let last_thread_activation_update_time_f = Atomic.get last_thread_activation_update_time in *)
+    (* let success = Atomic.compare_and_set last_thread_activation_update_time last_thread_activation_update_time_f t in *)
+    (* if (not success) then thread_ends_solve_event thread_id *)
+    (* else *)
+    (*   begin *)
+    (*     let time_diff = t -. last_thread_activation_update_time_f in *)
+    (*     let cpu_time_since_last_update = time_diff *. (float_of_int @@ Atomic.get active_threads) in *)
+    (*     let current_total_thread_activation_time = Atomic.get total_thread_activation_time in *)
+    (*     let new_total_thread_activation_time = current_total_thread_activation_time +. cpu_time_since_last_update in *)
+    (*     Atomic.set total_thread_activation_time new_total_thread_activation_time; *)
+    (*     Atomic.decr active_threads; *)
+    (*   end *)
 
 
   (* solvers can assign this to print solver specific statistics using their data structures *)
@@ -169,20 +175,37 @@ struct
     let threads_data = Seq.zip threads_data (Array.to_seq updates_by_thread) in
     let threads_with_update = ref 0 in
     let threads_with_anything = ref 0 in
-    Seq.iteri (fun i ((vars, evals), updates) -> 
-        if (Atomic.get vars) <> 0 || (Atomic.get evals) > 0 || (Atomic.get updates) <> 0 then
-          begin
-            Logs.info "Thread %d: vars: %d, evals: %d, updates: %d" i (Atomic.get vars) (Atomic.get evals) (Atomic.get updates);
-            threads_with_anything := !threads_with_anything + 1;
-          end;
-        if (Atomic.get updates) <> 0 then threads_with_update := !threads_with_update + 1
-      ) threads_data;
+    (* The following is an important statistics, here left out for simplicity *)
+    (* Seq.iteri (fun i ((vars, evals), updates) ->  *)
+    (*     if (Atomic.get vars) <> 0 || (Atomic.get evals) > 0 || (Atomic.get updates) <> 0 then *)
+    (*       begin *)
+    (*         Logs.info "Thread %d: vars: %d, evals: %d, updates: %d" i (Atomic.get vars) (Atomic.get evals) (Atomic.get updates); *)
+    (*         threads_with_anything := !threads_with_anything + 1; *)
+    (*       end; *)
+    (*     if (Atomic.get updates) <> 0 then threads_with_update := !threads_with_update + 1 *)
+    (*   ) threads_data; *)
     Logs.info "Threads with updates: %d" !threads_with_update;
     Logs.info "Threads with anything: %d" !threads_with_anything;
     Logs.info "Threads returned instantly: %d" (Atomic.get instant_returns);
     Logs.info "Threads started: %d" (Atomic.get thread_starts);
     Logs.info "Threads created: %d" (Atomic.get thread_creates);
     Logs.info "Threads active: %d" (Atomic.get active_threads);
+
+    let non_zero_start_times = Array.filter (fun t -> t <> 0.0) thread_start_times in
+    let first_thread_start = Array.fold_left min infinity non_zero_start_times in
+    let current_time = Unix.gettimeofday () in
+    let total_runtime = Seq.zip (Array.to_seq thread_start_times) (Array.to_seq thread_end_times) 
+      |> Seq.filter (fun (start, end_) -> start <> 0.0) 
+      |> Seq.map (fun (start, end_) -> if end_ = 0.0 then (start, current_time) else (start, end_))
+      |> Seq.fold_left (fun acc (start, end_) -> acc +. (end_ -. start)) 0.0 in
+    let walltime = current_time -. first_thread_start in
+    Logs.info "Total runtime: %f" total_runtime;
+    Logs.info "Walltime: %f" walltime;
+    let average_active_threads = total_runtime /. walltime in
+    Logs.info "Average active threads: %f" average_active_threads;
+      
+
+    
 
     (* Logs.info "vars: %d" (Atomic.get vars); *)
 
