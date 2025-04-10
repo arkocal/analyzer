@@ -19,6 +19,7 @@ open ConstrSys
 open GobConfig
 open Goblint_parallel
 open ParallelStats
+open Saturn
 open Messages
 
 
@@ -42,14 +43,14 @@ module Base : GenericCreatingEqSolver =
       (** The state of the solver for each unknown. *)
       type t = {
         value: S.Dom.t;
-        infl: VS.t;
+        infl: (S.Var.t, unit) Htbl.t;
         wpoint: bool;
         stable: bool;
         called: bool;
         root: bool; (** If this variable was the starting point of a solver thread *)
         id: int; (** Just for experimentation *)
       }
-      let default () = {value = S.Dom.bot (); infl = VS.empty; called = false; stable = false; wpoint = false; root = false; id=0}
+      let default () = {value = S.Dom.bot (); infl = Htbl.create ~hashed_type:(module S.Var) (); called = false; stable = false; wpoint = false; root = false; id=0}
       let to_string s = S.Dom.show s.value
 
     end
@@ -148,13 +149,14 @@ module Base : GenericCreatingEqSolver =
               if tracing then trace "destab-v" "stable remove %a (root:%b, called:%b)" S.Var.pretty_trace y y_state.root y_state.called;
             ) else (
               let inner_w = y_state.infl in
-              cas y_atom y_state {y_state with infl = VS.empty; stable = false};
+              cas y_atom y_state {y_state with stable = false};
               if tracing then trace "destab-v" "stable remove %a (root:%b, called:%b)" S.Var.pretty_trace y y_state.root y_state.called;
               if y_state.root then create_task prom y; 
               destabilize prom inner_w
             )) with CasFailException -> destab_single y
         in
-        VS.iter destab_single outer_w
+        Htbl.remove_all outer_w |> Seq.map fst |> 
+        Seq.iter destab_single
 
       (* TODO we need clear terminology here, task vs. job *)
       (** Creates a task to solve for y 
@@ -214,24 +216,23 @@ module Base : GenericCreatingEqSolver =
             get_var_event y;
             let y_state = Atomic.get y_atom in
             if tracing then trace "sol_query" "%d entering query for %a; stable %b; called %b" job_id S.Var.pretty_trace y y_state.stable y_state.called;
-            let y_state_with_infl = {y_state with infl = (VS.add x y_state.infl)} in
+            ignore @@ Htbl.try_add y_state.infl x ();
 
             if y_state.called then (
               if tracing then trace "infl" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
-              cas y_atom y_state {y_state_with_infl with wpoint=true};
+              cas y_atom y_state {y_state with wpoint=true};
               y_state.value
             ) 
             else if y_state.stable then (
-              cas y_atom y_state y_state_with_infl;
-              y_state.value
+              (Atomic.get y_atom).value
             ) else (
               if is_global y then (
                 if tracing then trace "infl" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
-                cas y_atom y_state {y_state_with_infl with stable = true};
+                cas y_atom y_state {y_state with stable = true};
                 y_state.value
               ) else (
                 if tracing then trace "infl" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
-                cas y_atom y_state {y_state_with_infl with stable = true; called=true};
+                cas y_atom y_state {y_state with stable = true; called=true};
                 if tracing then trace "called" "called %a" S.Var.pretty_trace y;
                 let ichain = y_state.id :: ichain in
                 iterate (Some x) prom y ichain job_id y_atom;
@@ -263,7 +264,7 @@ module Base : GenericCreatingEqSolver =
               in 
               if tracing then trace "update" "%d side update %a with \n\t%a" job_id S.Var.pretty_trace x S.Dom.pretty (widen old d);
               let w = s.infl in
-              let new_s = {s with value = (widen old d); stable = true; infl = VS.empty} in
+              let new_s = {s with value = (widen old d); stable = true} in
               cas y_atom s new_s;
               if tracing then trace "destab" "destabilize %a" S.Var.pretty_trace y;
               update_var_event job_id y old (new_s.value);
@@ -309,10 +310,10 @@ module Base : GenericCreatingEqSolver =
 
         if S.Dom.equal new_value old_value then (
           if x_state.stable then (
-            let infl = match orig with 
-              | Some z -> (VS.add z x_state.infl)
-              | None -> x_state.infl in
-            let x_state_new = {x_state with infl = infl; called = false; wpoint = false} in
+            (match orig with 
+             | Some z -> ignore @@ Htbl.try_add x_state.infl z ()
+             | None -> ());
+            let x_state_new = {x_state with called = false; wpoint = false} in
             try (cas x_atom x_state x_state_new;
                  if tracing then trace "called" "uncalled (A) %a" S.Var.pretty_trace x;
                 ) with CasFailException -> (iterate[@tailcall]) orig prom x ichain job_id x_atom;
@@ -326,7 +327,7 @@ module Base : GenericCreatingEqSolver =
         ) else (
           (* value has changed *)
           if tracing then trace "update" "%d iterate update %a with \n\t%a" job_id S.Var.pretty_trace x S.Dom.pretty new_value;
-          let x_state_new = {x_state with value = new_value; infl = VS.empty} in
+          let x_state_new = {x_state with value = new_value} in
           try (
             cas x_atom x_state x_state_new;
             if tracing then trace "destab" "destabilize %a" S.Var.pretty_trace x;
@@ -337,10 +338,10 @@ module Base : GenericCreatingEqSolver =
               let x_state = Atomic.get x_atom in
 
               if x_state.stable then (
-                let new_infl = match orig with 
-                  | Some z -> (VS.add z x_state.infl)
-                  | None -> x_state.infl in
-                let new_s = {x_state with called = false; infl = new_infl} in
+                (match orig with
+                 | Some z -> ignore @@ Htbl.try_add x_state.infl z ()
+                 | None -> ());
+                let new_s = {x_state with called = false} in
                 try (cas x_atom x_state new_s;
                      if tracing then trace "called" "uncalled (B) %a" S.Var.pretty_trace x;
                     )
