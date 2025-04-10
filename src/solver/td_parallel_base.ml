@@ -21,20 +21,6 @@ open Goblint_parallel
 open ParallelStats
 open Messages
 
-exception CasFailException
-
-module CasWithStatAndException = struct
-  let count_success = Atomic.make 0
-  let count_failure = Atomic.make 0
-  let cas key old new_ =
-    if Atomic.compare_and_set key old new_ then
-      Atomic.incr count_success
-    else
-      begin
-        Atomic.incr count_failure;
-        raise CasFailException
-      end
-end
 
 module Base : GenericCreatingEqSolver =
   functor (S:CreatingEqConstrSys) ->
@@ -45,6 +31,10 @@ module Base : GenericCreatingEqSolver =
     module Thread_pool = Threadpool.Thread_pool
 
     open ParallelSolverStats (EqConstrSysFromCreatingEqConstrSys (S)) (HM)
+
+    exception CasFailException = Cas.CasFailException
+    module Cas = Cas.CasWithStatAndException
+    let cas = Cas.cas
 
     (** State for each unkown and a default factory. *)
     module DefaultState = struct
@@ -61,6 +51,7 @@ module Base : GenericCreatingEqSolver =
       }
       let default () = {value = S.Dom.bot (); infl = VS.empty; called = false; stable = false; wpoint = false; root = false; id=0}
       let to_string s = S.Dom.show s.value
+
     end
 
     (** Concurrency safe hashmap for the state of the unknowns. *)
@@ -79,13 +70,11 @@ module Base : GenericCreatingEqSolver =
 
         With this wrapper we can measure how often this happens.
     *)
-    (* let cas = CasWithStatAndException.cas *)
-    let cas = Data.CasWithStat.cas
-
     let print_data data =
-      Logs.info "CAS success: %d" (Atomic.get CasWithStatAndException.count_success);
-      Logs.info "CAS failure: %d" (Atomic.get CasWithStatAndException.count_failure);
-      Logs.info "CAS success rate: %f" (float_of_int (Atomic.get CasWithStatAndException.count_success) /. (float_of_int (Atomic.get CasWithStatAndException.count_success + Atomic.get CasWithStatAndException.count_failure)))
+      Logs.info "CAS success: %d" (Atomic.get Cas.count_success);
+      Logs.info "CAS failure: %d" (Atomic.get Cas.count_failure);
+      Logs.info "CAS success rate: %f" (float_of_int (Atomic.get Cas.count_success) /. (float_of_int (Atomic.get Cas.count_success + Atomic.get Cas.count_failure)))
+
 
     let print_data_verbose data str =
       if Logs.Level.should_log Debug then (
@@ -146,7 +135,7 @@ module Base : GenericCreatingEqSolver =
           @param outer_w The set of variables to destabilize.
       *)
       let rec destabilize prom outer_w =
-        let cas = CasWithStatAndException.cas in
+        let cas = Cas.cas in
         let rec destab_single y =
           try (
             let y_atom = CM.find data y in
@@ -219,7 +208,7 @@ module Base : GenericCreatingEqSolver =
         let rec query x y = (* ~eval in td3 *)
           (* Query with atomics: if anything is changed, query is repeated and the initial call *)
           (* has no side effects. Thus, imitating that the query just happend in a later point in time.*)
-          let cas = CasWithStatAndException.cas in
+          let cas = Cas.cas in
           try (
             let y_atom = init y job_id in
             get_var_event y;
@@ -243,6 +232,7 @@ module Base : GenericCreatingEqSolver =
               ) else (
                 if tracing then trace "infl" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
                 cas y_atom y_state {y_state_with_infl with stable = true; called=true};
+                if tracing then trace "called" "called %a" S.Var.pretty_trace y;
                 let ichain = y_state.id :: ichain in
                 iterate (Some x) prom y ichain job_id y_atom;
                 (Atomic.get y_atom).value
@@ -257,7 +247,7 @@ module Base : GenericCreatingEqSolver =
         *)
         let rec side x y d =
           assert (is_global y);
-          let cas = CasWithStatAndException.cas in
+          let cas = Cas.cas in
           try (
             let y_atom = init y job_id in
             let s = Atomic.get y_atom in
@@ -275,7 +265,7 @@ module Base : GenericCreatingEqSolver =
               let w = s.infl in
               let new_s = {s with value = (widen old d); stable = true; infl = VS.empty} in
               cas y_atom s new_s;
-              if tracing then trace "destab" "%d side destabilizing %a" job_id S.Var.pretty_trace y;
+              if tracing then trace "destab" "destabilize %a" S.Var.pretty_trace y;
               update_var_event job_id y old (new_s.value);
               destabilize prom w
             )) with CasFailException -> side x y d
@@ -295,7 +285,7 @@ module Base : GenericCreatingEqSolver =
         (* let ichain_as_string = List.fold_left (fun acc x -> acc ^ (string_of_int x) ^ ".") "" in  *)
         (* if tracing then trace "ichain" "%s" (ichain_as_string ichain); *)
         assert (not @@ is_global x);
-        let cas = CasWithStatAndException.cas in
+        let cas = Cas.cas in
         let x_state = Atomic.get x_atom in
 
         (match orig with
@@ -323,7 +313,9 @@ module Base : GenericCreatingEqSolver =
               | Some z -> (VS.add z x_state.infl)
               | None -> x_state.infl in
             let x_state_new = {x_state with infl = infl; called = false; wpoint = false} in
-            try (cas x_atom x_state x_state_new ) with CasFailException -> (iterate[@tailcall]) orig prom x ichain job_id x_atom;
+            try (cas x_atom x_state x_state_new;
+                 if tracing then trace "called" "uncalled (A) %a" S.Var.pretty_trace x;
+                ) with CasFailException -> (iterate[@tailcall]) orig prom x ichain job_id x_atom;
           ) else (
             let x_state_new = {x_state with stable = true} in
             (* No need to track cas success, as we will iterate again anyway. *)
@@ -337,7 +329,7 @@ module Base : GenericCreatingEqSolver =
           let x_state_new = {x_state with value = new_value; infl = VS.empty} in
           try (
             cas x_atom x_state x_state_new;
-            if tracing then trace "destab" "%d iterate destabilizing %a" job_id S.Var.pretty_trace x;
+            if tracing then trace "destab" "destabilize %a" S.Var.pretty_trace x;
             update_var_event job_id x old_value new_value;
             destabilize prom x_state.infl;
 
@@ -349,7 +341,10 @@ module Base : GenericCreatingEqSolver =
                   | Some z -> (VS.add z x_state.infl)
                   | None -> x_state.infl in
                 let new_s = {x_state with called = false; infl = new_infl} in
-                try cas x_atom x_state new_s with CasFailException -> (finalize[@tailcall]) ()
+                try (cas x_atom x_state new_s;
+                     if tracing then trace "called" "uncalled (B) %a" S.Var.pretty_trace x;
+                    )
+                with CasFailException -> (finalize[@tailcall]) ()
               ) else (
                 let new_s = {x_state with stable = true} in
                 (* Here we cannot use the exception, because the handling would *)
