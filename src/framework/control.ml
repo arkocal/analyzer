@@ -827,8 +827,6 @@ struct
 
     Messages.finalize ();
     Timing.wrap "result output" (Result.output (lazy local_xml) gh make_global_fast_xml) file;
-    if (get_bool "restart.enabled") then
-      raise Restart.RestartAnalysis
 end
 
 (* This function was originally a part of the [AnalyzeCFG] module, but
@@ -840,9 +838,8 @@ let rec analyze_loop (module CFG : CfgBidirSkip) file fs change_info =
   try
     let (module Spec) = get_spec () in
     let module A = AnalyzeCFG (CFG) (Spec) (struct let increment = change_info end) in
-    let sighandle = Sys.Signal_handle (fun _ -> raise Restart.RestartTimeout) in
+    let sighandle = Sys.Signal_handle (fun _ -> raise Stdlib.Exit) in
     if (get_bool "restart.enabled") then (
-      Restart.setConf ();
       Sys.set_signal Sys.sigalrm sighandle;
       ignore (Unix.alarm (get_int "restart.timeout"))
     );
