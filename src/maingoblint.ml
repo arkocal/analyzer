@@ -109,7 +109,6 @@ let rec option_spec_list: Arg_complete.speclist Lazy.t = lazy (
   ; "--enable"             , Arg_complete.String ((fun x -> set_bool x true), complete_bool_option), ""
   ; "--disable"            , Arg_complete.String ((fun x -> set_bool x false), complete_bool_option), ""
   ; "--conf"               , Arg_complete.String ((fun fn -> merge_file (Fpath.v fn)), Arg_complete.empty), ""
-  ; "--conflist"           , Arg_complete.String ((fun x -> set_string "restart.conflist[+]" x; set_bool "restart.enabled" true), Arg_complete.empty), ""
   ; "--writeconf"          , Arg_complete.String ((fun fn -> writeconffile := Some (Fpath.v fn)), Arg_complete.empty), ""
   ; "--version"            , Arg_complete.Unit print_version, ""
   ; "--print_options"      , Arg_complete.Unit (fun () -> Options.print_options (); exit 0), ""

@@ -844,7 +844,7 @@ let rec analyze_loop (module CFG : CfgBidirSkip) file fs change_info =
     if (get_bool "restart.enabled") then (
       Restart.setConf ();
       Sys.set_signal Sys.sigalrm sighandle;
-      ignore (Unix.alarm 10)
+      ignore (Unix.alarm (get_int "restart.timeout"))
     );
     GobConfig.with_immutable_conf (fun () -> A.analyze file fs)
   with 
@@ -854,20 +854,6 @@ let rec analyze_loop (module CFG : CfgBidirSkip) file fs change_info =
         Whoever raised the exception should've modified some global state
         to do a more precise analysis next time. *)
     (* TODO: do some more incremental refinement and reuse parts of solution *)
-    analyze_loop (module CFG) file fs change_info
-  | Restart.RestartAnalysis ->
-    Logs.debug "RESTARTING";
-    Restart.reset_states ();
-    Logs.debug "Generating the control flow graph.";
-    let (module CFG) = CfgTools.compute_cfg file in
-    MyCFG.current_cfg := (module CFG);
-    analyze_loop (module CFG) file fs change_info
-  | Restart.RestartTimeout ->
-    Logs.debug "RESTARTING";
-    Restart.reset_states ();
-    Logs.debug "Generating the control flow graph.";
-    let (module CFG) = CfgTools.compute_cfg file in
-    MyCFG.current_cfg := (module CFG);
     analyze_loop (module CFG) file fs change_info
 
 (** The main function to perform the selected analyses. *)

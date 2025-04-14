@@ -2705,18 +2705,11 @@
           "type": "boolean",
           "default": false
         },
-        "conflist": {
-          "title": "restart.conflist",
-          "description": "List of configurations to use after each restart",
-          "type": "array",
-          "items": { "type": "string" },
-          "default": []
-        },
-        "firstRun": {
-          "title": "restart.firstRun",
-          "description": "checks whether goblint has restarted at least once",
-          "type": "boolean",
-          "default": true
+        "timeout": {
+          "title": "restart.timeout",
+          "description": "Runtime until timeout in seconds",
+          "type": "integer",
+          "default": 60
         }
       },
       "additionalProperties": false
