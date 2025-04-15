@@ -826,7 +826,7 @@ struct
     if get_string "result" <> "none" then Logs.debug "Generating output: %s" (get_string "result");
 
     Messages.finalize ();
-    Timing.wrap "result output" (Result.output (lazy local_xml) gh make_global_fast_xml) file;
+    Timing.wrap "result output" (Result.output (lazy local_xml) gh make_global_fast_xml) file
 end
 
 (* This function was originally a part of the [AnalyzeCFG] module, but
@@ -844,8 +844,7 @@ let rec analyze_loop (module CFG : CfgBidirSkip) file fs change_info =
       ignore (Unix.alarm (get_int "restart.timeout"))
     );
     GobConfig.with_immutable_conf (fun () -> A.analyze file fs)
-  with 
-  | Refinement.RestartAnalysis ->
+  with Refinement.RestartAnalysis ->
     (* Tail-recursively restart the analysis again, when requested.
         All solving starts from scratch.
         Whoever raised the exception should've modified some global state
