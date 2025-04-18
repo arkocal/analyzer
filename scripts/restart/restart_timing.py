@@ -7,8 +7,9 @@ from prettytable import PrettyTable
 analyzer_path = os.path.dirname(__file__) + '/../../goblint'
 
 def analyses():
-    files = ['tests/incremental/00-basic/00-local.c']
-    anas = ["expRelation", "base", "threadid", "threadflag", "threadreturn", "escape", "mutexEvents", "mutex", "access", "race", "mallocWrapper", "mhp", "assert", "pthreadMutexType"]
+    files = ['../bench/coreutils/cksum_comb.c']
+    anas = ['"base", "mallocWrapper", "mutex", "mutexEvents", "access"', "expRelation", "threadid", "threadflag", "threadreturn",
+            "escape", "race", "mhp", "assert", "pthreadMutexType","var_eq","symb_locks","region","thread","threadJoins"]
     for f in files:
         for a in anas:
             conf = open(os.path.dirname(__file__) + "/restart_timing.conf", "w")

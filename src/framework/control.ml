@@ -840,6 +840,7 @@ let rec analyze_loop (module CFG : CfgBidirSkip) file fs change_info =
     let module A = AnalyzeCFG (CFG) (Spec) (struct let increment = change_info end) in
     let sighandle = Sys.Signal_handle (fun _ -> raise Stdlib.Exit) in
     if (get_bool "restart.enabled") then (
+      GobConfig.write_file (Fpath.v "scripts/restart/autotune.conf");
       Sys.set_signal Sys.sigalrm sighandle;
       ignore (Unix.alarm (get_int "restart.timeout"))
     );
