@@ -56,7 +56,7 @@ module Base : GenericCreatingEqSolver =
     end
 
     (** Concurrency safe hashmap for the state of the unknowns. *)
-    module CM = Data.SafeHashmap (S.Var) (DefaultState) (HM)
+    module CM = Data.SafeHashmapSat (S.Var) (DefaultState) (HM)
 
     let var_count = Atomic.make 0
 

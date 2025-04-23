@@ -54,7 +54,7 @@ depends: [
   "csexp" {= "1.5.2"}
   "cstruct" {= "6.2.0"}
   "ctypes" {= "0.22.0"}
-  "domainslib" {= "0.3.2"}
+  "domainslib" {= "0.5.0"}
   "domain-local-await" {= "1.0.1"}
   "domain_shims" {= "0.1.0"}
   "dune" {= "3.16.0"}
@@ -143,7 +143,7 @@ post-messages: [
 pin-depends: [
   [
     "goblint-cil.2.0.5" 
-    "git+https://github.com/arkocal/goblint-cil.git#c7c68d74ffb11d81747b51b0c4a922ecbf4e1fc8" 
+    "git+https://github.com/arkocal/goblint-cil.git#84c012bd01dd27e3990acbb8cc0d0ec3c7b24f15"
   ]
   [
     "camlidl.1.12"

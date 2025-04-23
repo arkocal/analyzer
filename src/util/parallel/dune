@@ -14,5 +14,7 @@
       (-> threadpool.no-domainslib.ml)
       )
    domain_shims
-   domain-local-await)
+   domain-local-await
+   saturn
+   )
  )
