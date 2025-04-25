@@ -826,6 +826,7 @@ struct
     if get_string "result" <> "none" then Logs.debug "Generating output: %s" (get_string "result");
 
     Messages.finalize ();
+    GobConfig.write_file (Fpath.v "scripts/restart/autotune.conf");
     Timing.wrap "result output" (Result.output (lazy local_xml) gh make_global_fast_xml) file
 end
 
@@ -840,7 +841,12 @@ let rec analyze_loop (module CFG : CfgBidirSkip) file fs change_info =
     let module A = AnalyzeCFG (CFG) (Spec) (struct let increment = change_info end) in
     let sighandle = Sys.Signal_handle (fun _ -> raise Stdlib.Exit) in
     if (get_bool "restart.enabled") then (
-      GobConfig.write_file (Fpath.v "scripts/restart/autotune.conf");
+      if (get_bool "restart.autotune") then (
+        let autotune_settings = ["singleThreaded"; "mallocWrappers"; "noRecursiveIntervals"; "enums"; "congruence"; "octagon"; 
+        "wideningThresholds"; "loopUnrollHeuristic"; "memsafetySpecification"; "termination"; "tmpSpecialAnalysis"] in
+        List.iter (set_string "ana.autotune.activated[+]") autotune_settings;
+        set_bool "ana.autotune.enabled" true
+      );
       Sys.set_signal Sys.sigalrm sighandle;
       ignore (Unix.alarm (get_int "restart.timeout"))
     );

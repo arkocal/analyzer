@@ -5,28 +5,33 @@ import signal
 
 def parser():
     parser = argparse.ArgumentParser(description='Run goblint multiple times with different configurations until timeout.')
-    parser.add_argument('-v', '--verbose', action='store_true', help='generate verbose output')
-    parser.add_argument('-t', '--timeout', type=int, default=60, help='Time until analysis timeout in seconds')
-    parser.add_argument('--runtime', type=int, default=900, help='Time limit for restart script in seconds')
-    parser.add_argument('-a', '--autotune', action='store_true', help='Auto adjust first config after every restart until time limit.')
-    parser.add_argument('-c','--conf', nargs='+', help='configurations to be used')
-    parser.add_argument('-f','--file', required=True, help='file to be analyzed')
+    parser.add_argument('-v', '--verbose', action='store_true', help='generate verbose output.')
+    parser.add_argument('-t', '--timeout', type=int, default=60, help='Time until analysis timeout in seconds.')
+    parser.add_argument('--runtime', type=int, default=900, help='Time limit for restart script in seconds.')
+    parser.add_argument('-a', '--autotune', action='store_true', help='Auto adjust first config after every restart for LIMIT runs or RUNTIME seconds.')
+    parser.add_argument('--a_limit', type=int, metavar='LIMIT', help='limit how many iterations autotune is used for.')
+    parser.add_argument('--svcomp', metavar='property.prp', help='Activate SV-COMP mode and provide the specification.')
+    parser.add_argument('-c','--conf', nargs='+', help='configurations to be used.')
+    parser.add_argument('-f','--file', required=True, help='file to be analyzed.')
 
     args = parser.parse_args()
     assert args.timeout > 0, "Timeout must be a positive integer."
     print(args)
     return args
 
+
 def handler(signum, frame):
     print("Restart time limit reached!")
     raise Exception("timeout")
-  
+
 
 def main():
     args = parser()
 
     restart = "true"
-    last_output = ""
+    last_output = "empty"
+    runcount = args.a_limit if args.autotune else len(args.conf)
+    error_message = "Error" if args.svcomp == None else "SV-COMP result: unknown"
     analyzer_path = os.path.dirname(__file__) + '/../../goblint'
     autotune_args = ["--set", "ana.autotune.enabled", "true"]
 
@@ -36,27 +41,26 @@ def main():
 
     # start of restart loop
     try:
-        for c in args.conf:
+        for i in range(runcount):
             # set loop args
-            index = args.conf.index(c)
-            if len(args.conf) - index == 1:
+            c = args.conf[i]
+            if i >= runcount - 1:
                 restart = "false"
             gob_args = [analyzer_path, '--set', 'restart.enabled', restart, '--set', 'restart.timeout', str(args.timeout), '--conf', c, args.file]
             if args.verbose: gob_args.append("-v")
+            if args.autotune: gob_args.extend(["--set", "restart.autotune", "true"])
 
             # call goblint
             print("Current configuration: " + c)
             result = subprocess.run(gob_args, capture_output=True, text=True)
 
             # check and print output
-            if ("Error" not in result.stdout):
-                print(result.stdout)
+            if (error_message not in result.stdout):
                 break
             else:
                 last_output = result.stdout
                 print("Error: Restarting")
         else:
-            print(result.stderr)
             print(result.stdout)
     except:
         print(last_output)

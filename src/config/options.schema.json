@@ -2710,6 +2710,12 @@
           "description": "Runtime until timeout in seconds",
           "type": "integer",
           "default": 60
+        },
+        "autotune": {
+          "title": "restart.autotune",
+          "description": "Use autotune with restart",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false
