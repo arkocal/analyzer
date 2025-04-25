@@ -842,8 +842,11 @@ let rec analyze_loop (module CFG : CfgBidirSkip) file fs change_info =
     let sighandle = Sys.Signal_handle (fun _ -> raise Stdlib.Exit) in
     if (get_bool "restart.enabled") then (
       if (get_bool "restart.autotune") then (
-        let autotune_settings = ["singleThreaded"; "mallocWrappers"; "noRecursiveIntervals"; "enums"; "congruence"; "octagon"; 
-        "wideningThresholds"; "loopUnrollHeuristic"; "memsafetySpecification"; "termination"; "tmpSpecialAnalysis"] in
+        let autotune_settings = [
+          "singleThreaded"; "mallocWrappers"; "noRecursiveIntervals"; "enums"; "congruence"; "octagon"; 
+          "wideningThresholds"; "loopUnrollHeuristic"; "memsafetySpecification"; "termination"; 
+          "tmpSpecialAnalysis"
+        ] in
         List.iter (set_string "ana.autotune.activated[+]") autotune_settings;
         set_bool "ana.autotune.enabled" true
       );
