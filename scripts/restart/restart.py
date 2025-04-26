@@ -43,7 +43,7 @@ def main():
     try:
         for i in range(runcount):
             # set loop args
-            c = args.conf[i]
+            c = args.conf[i] if not args.autotune else "scripts/restart/autotune.conf"
             if i >= runcount - 1:
                 restart = "false"
             gob_args = [analyzer_path, '--set', 'restart.enabled', restart, '--set', 'restart.timeout', str(args.timeout), '--conf', c, args.file]
