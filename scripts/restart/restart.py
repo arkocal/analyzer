@@ -10,7 +10,7 @@ def parser():
     parser.add_argument('--runtime', type=int, default=900, help='Time limit for restart script in seconds.')
     parser.add_argument('-a', '--autotune', action='store_true', help='Auto adjust first config after every restart for LIMIT runs or RUNTIME seconds.')
     parser.add_argument('--a_limit', type=int, metavar='LIMIT', help='limit how many iterations autotune is used for.')
-    parser.add_argument('--svcomp', metavar='property.prp', help='Activate SV-COMP mode and provide the specification.')
+    parser.add_argument('--spec', metavar='property.prp', help='Path or string for a specification for SV-COMP.')
     parser.add_argument('-c','--conf', nargs='+', help='configurations to be used.')
     parser.add_argument('-f','--file', required=True, help='file to be analyzed.')
 
@@ -31,7 +31,7 @@ def main():
     restart = "true"
     last_output = "empty"
     runcount = args.a_limit if args.autotune else len(args.conf)
-    error_message = "Error" if args.svcomp == None else "SV-COMP result: unknown"
+    error_message = "Error" if args.spec == None else "SV-COMP result: unknown"
     analyzer_path = os.path.dirname(__file__) + '/../../goblint'
     autotune_args = ["--set", "ana.autotune.enabled", "true"]
 
@@ -49,6 +49,7 @@ def main():
             gob_args = [analyzer_path, '--set', 'restart.enabled', restart, '--set', 'restart.timeout', str(args.timeout), '--conf', c, args.file]
             if args.verbose: gob_args.append("-v")
             if args.autotune: gob_args.extend(["--set", "restart.autotune", "true"])
+            if args.spec != None: gob_args.extend(["--set", "ana.specification", args.spec])
 
             # call goblint
             print("Current configuration: " + c)
@@ -56,6 +57,7 @@ def main():
 
             # check and print output
             if (error_message not in result.stdout):
+                print(result.stdout)
                 break
             else:
                 last_output = result.stdout
