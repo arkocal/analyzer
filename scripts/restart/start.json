@@ -1,0 +1,48 @@
+{
+    "ana": {
+      "sv-comp": {
+          "enabled": true,
+          "functions": true
+      },
+      "activated": [
+        "base", "mallocWrapper","escape","mutex","mutexEvents","access", "race", "assert"
+      ],
+      "base": {
+        "privatization": "none",
+        "context": {
+          "non-ptr": false
+        }
+      },
+      "thread": {
+        "domain": "plain",
+        "include-node": false
+      }
+    },
+    "exp": {
+      "earlyglobs": true
+    },
+    "witness": {
+      "graphml": {
+        "enabled": true,
+        "id": "enumerate",
+        "unknown": false
+      },
+      "yaml": {
+        "enabled": true,
+        "format-version": "2.0",
+        "entry-types": [
+          "invariant_set"
+        ],
+        "invariant-types": [
+          "loop_invariant"
+        ]
+      },
+      "invariant": {
+        "loop-head": true,
+        "after-lock": false,
+        "other": false,
+        "accessed": false,
+        "exact": true
+      }
+    }
+  }

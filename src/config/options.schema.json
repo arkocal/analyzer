@@ -2709,7 +2709,7 @@
           "title": "restart.timeout",
           "description": "Runtime until timeout in seconds",
           "type": "integer",
-          "default": 60
+          "default": 120
         },
         "autotune": {
           "title": "restart.autotune",

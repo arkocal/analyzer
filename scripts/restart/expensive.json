@@ -1,0 +1,90 @@
+{
+    "ana": {
+      "sv-comp": {
+        "enabled": true,
+        "functions": true
+      },
+      "int": {
+        "def_exc": true,
+        "enums": false,
+        "interval": true
+      },
+      "float": {
+        "interval": true
+      },
+      "activated": [
+        "base",
+        "threadid",
+        "threadflag",
+        "threadreturn",
+        "mallocWrapper",
+        "mutexEvents",
+        "mutex",
+        "access",
+        "race",
+        "escape",
+        "expRelation",
+        "mhp",
+        "assert",
+        "var_eq",
+        "symb_locks",
+        "region",
+        "thread",
+        "threadJoins",
+        "abortUnless"
+      ],
+      "path_sens": [
+        "mutex",
+        "malloc_null",
+        "uninit",
+        "expsplit",
+        "activeSetjmp",
+        "memLeak",
+        "threadflag"
+      ],
+      "autotune": {
+        "enabled": true,
+        "activated": [
+          "singleThreaded",
+          "mallocWrappers",
+          "noRecursiveIntervals",
+          "enums",
+          "congruence",
+          "octagon",
+          "wideningThresholds",
+          "loopUnrollHeuristic",
+          "memsafetySpecification",
+          "termination",
+          "tmpSpecialAnalysis"
+        ]
+      }
+    },
+    "witness": {
+      "graphml": {
+        "enabled": true,
+        "id": "enumerate",
+        "unknown": false
+      },
+      "yaml": {
+        "enabled": true,
+        "format-version": "2.0",
+        "entry-types": [
+          "invariant_set"
+        ],
+        "invariant-types": [
+          "loop_invariant"
+        ]
+      },
+      "invariant": {
+        "loop-head": true,
+        "after-lock": false,
+        "other": false,
+        "accessed": false,
+        "exact": true
+      }
+    },
+    "pre": {
+      "enabled": false
+    }
+  }
+  
