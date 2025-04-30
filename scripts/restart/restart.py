@@ -88,7 +88,8 @@ def loop(args, timing=False):
     except:
         print(last_output)
 
-    return firstrun, (firstrunTime)
+    if timing:
+        return firstrun, (firstrunTime), result
 
 def main():
     args = parser()

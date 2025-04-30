@@ -1,7 +1,45 @@
 import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
 import numpy as np
 import yaml
 import os
+
+def autotune_goblint_datarace():
+    x1,y1,z1 = np.genfromtxt(os.path.dirname(__file__) + '/data/goblint_svcomp_datarace_timings.txt', delimiter=',', unpack=True, dtype=None)
+    x2,y2,z2, _, _, _, _ = np.genfromtxt(os.path.dirname(__file__) + '/data/Autotune_no-data-race_timings.txt', delimiter=',', unpack=True, dtype=None)
+    new_z1, new_z2 = zip(*sorted(zip(z1,z2)))
+    cum_z1 = np.cumsum(new_z1)
+    cum_z2 = np.cumsum(new_z2)
+
+    ax = plt.subplot(111)
+    ax.set_title('Cumulative runtime for goblint-regression no-data-race')
+    ax.set_ylabel('Runtime in seconds')
+    ax.set_xlabel('Analyzed file index')
+    ax.plot(x1, cum_z1, color='g')
+    ax.plot(x1, cum_z2, color='b')
+    green_line = mlines.Line2D([], [], color='green', markersize=15, label='Goblint')
+    red_line = mlines.Line2D([], [], color='red', markersize=15, label='Autotune')
+    plt.savefig(os.path.dirname(__file__) + "/graphs/autotune_goblint_datarace.png")
+
+
+def conflist_goblint_datarace():
+    x1,y1,z1 = np.genfromtxt(os.path.dirname(__file__) + '/data/goblint_svcomp_datarace_timings.txt', delimiter=',', unpack=True, dtype=None)
+    x2,y2,z2, _, _, _, _ = np.genfromtxt(os.path.dirname(__file__) + '/data/conflist_no-data-race_timings.txt', delimiter=',', unpack=True, dtype=None)
+    new_z1, new_z2 = zip(*sorted(zip(z1,z2)))
+    cum_z1 = np.cumsum(new_z1)
+    cum_z2 = np.cumsum(new_z2)
+
+    ax = plt.subplot(111)
+    ax.set_title('Cumulative runtime for goblint-regression no-data-race')
+    ax.set_ylabel('Runtime in seconds')
+    ax.set_xlabel('Analyzed file index')
+    ax.plot(x1, cum_z1, color='g')
+    ax.plot(x1, cum_z2, color='b')
+    green_line = mlines.Line2D([], [], color='green', markersize=15, label='Goblint')
+    blue_line = mlines.Line2D([], [], color='blue', markersize=15, label='Conflist')
+    ax.legend(handles=[green_line, blue_line])
+    plt.savefig(os.path.dirname(__file__) + "/graphs/conflist_goblint_datarace.png")
+
 
 # no-data-race graphs
 def average_datarace():
@@ -48,7 +86,7 @@ def goblint_datarace():
     ax.set_ylabel('Runtime in seconds')
     ax.set_xlabel('Analyzed file')
     ax.set_ylim([0,5])
-    ax.bar(x1, z1, color='g', align='center')
+    ax.plot(x1, sorted(z1), color='g')
     plt.savefig(os.path.dirname(__file__) + "/graphs/goblint_datarace.png")
 
 
@@ -150,6 +188,9 @@ def goblint_unreachcall():
 
 
 def main():
+    #autotune_goblint_datarace()
+    conflist_goblint_datarace()
+
     #autotune_datarace()
     #conflist_datarace()
     #goblint_datarace()

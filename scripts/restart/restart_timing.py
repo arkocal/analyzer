@@ -3,16 +3,20 @@ import string
 import time
 import subprocess
 import os
+
+from blinker import Namespace
 import restart
 from prettytable import PrettyTable
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
+
 analyzer_path = os.path.dirname(__file__) + '/../../goblint'
 restart_path = os.path.dirname(__file__) + "/restart.py"
 svbench_path = os.path.dirname(__file__) + '/../../../sv-benchmarks'
 bench_path = os.path.dirname(__file__) + '/../../../bench'
+
 
 def test():
     x,y,z = np.genfromtxt(os.path.dirname(__file__) + '/data/test.txt', delimiter=',', unpack=True, dtype=None)
@@ -27,139 +31,77 @@ def restart_svcomp_graph():
     return
 
 # svcomp no-data-race
-def autotune_svcomp_datarace_timings():
-    outfile = open(os.path.dirname(__file__) + '/data/Autotune_svcomp_datarace_timings.txt', 'w')
+def autotune_timings(property):
+    outfile = open(os.path.dirname(__file__) + '/data/autotune_' + property + '_timings.txt', 'w')
     i = 1
     for file in os.listdir(svbench_path + '/c/goblint-regression'):
         if file.endswith('.yml'):
             spec = yaml.safe_load(open(svbench_path + '/c/goblint-regression/' + file, 'r'))
             for p in spec["properties"]:
-                if p["property_file"] == "../properties/no-data-race.prp" and "expected_verdict" in p:
+                if p["property_file"] == "../properties/" + property + ".prp" and "expected_verdict" in p:
+                    args = argparse.Namespace(conf=[os.path.dirname(__file__) + '/start.json'],file=svbench_path + '/c/goblint-regression/' + spec['input_files'],spec=svbench_path + '/c/properties/' + property + '.prp',runtime=120,timeout=60,a_limit=2,verbose=False,autotune=True,architecture=None)
+                    setattr(args,"witness.yaml.validate",None)
+                    setattr(args,"witness.yaml.unassume",None)
                     start = time.perf_counter()
-                    first, firstrunTime = restart.loop([os.path.dirname(__file__) + '/start.json'], svbench_path + '/c/goblint-regression/' + spec['input_files'], svbench_path + '/c/properties/no-data-race.prp', True, 120, 60, 2, False, timing=True)
+                    first, firstTime, output = restart.loop(args, timing=True)
                     end = time.perf_counter()
-                    outfile.write(str(i) + ',' + spec['input_files'] + ',' + str(end - start) + ',' + str(first) + ',' + str(firstrunTime) + '\n')
+
+                    result = "empty"
+                    if "SV-COMP result: unknown" in output.stdout:
+                        result = "unknown"
+                    if "SV-COMP result: true" in output.stdout:
+                        result = "True"
+                    if "SV-COMP result: false" in output.stdout:
+                        result = "False"
+                    outfile.write(str(i) + ',' + spec['input_files'] + ',' + str(end - start) + ',' + str(first) + ',' + str(firstTime) + ',' + str(result) + ',' + str(p["expected_verdict"]) + '\n')
                     i += 1
 
 
-def conflist_svcomp_datarace_timings():
-    outfile = open(os.path.dirname(__file__) + '/data/conflist_svcomp_datarace_timings.txt', 'w')
+def conflist_timings(property):
+    outfile = open(os.path.dirname(__file__) + '/data/conflist_' + property + '_timings.txt', 'w')
     i = 1
     for file in os.listdir(svbench_path + '/c/goblint-regression'):
         if file.endswith('.yml'):
             spec = yaml.safe_load(open(svbench_path + '/c/goblint-regression/' + file, 'r'))
             for p in spec["properties"]:
-                if p["property_file"] == "../properties/no-data-race.prp" and "expected_verdict" in p:
+                if p["property_file"] == "../properties/" + property + ".prp" and "expected_verdict" in p:
+                    args = argparse.Namespace(conf=[os.path.dirname(__file__) + '/start.json',os.path.dirname(__file__) + '/../../conf/svcomp.json'],file=svbench_path + '/c/goblint-regression/' + spec['input_files'],spec=svbench_path + '/c/properties/' + property + '.prp',runtime=120,timeout=60,a_limit=2,verbose=False,autotune=False,architecture=None)
+                    setattr(args,"witness.yaml.validate",None)
+                    setattr(args,"witness.yaml.unassume",None)
                     start = time.perf_counter()
-                    first, firstrunTime = restart.loop([os.path.dirname(__file__) + '/start.json',os.path.dirname(__file__) + '/../../conf/svcomp.json'], svbench_path + '/c/goblint-regression/' + spec['input_files'], svbench_path + '/c/properties/no-data-race.prp', False, 120, 60, 2, False, timing=True)
+                    first, firstTime, output = restart.loop(args, timing=True)
                     end = time.perf_counter()
-                    outfile.write(str(i) + ',' + spec['input_files'] + ',' + str(end - start) + ',' + str(first) + ',' + str(firstrunTime) + '\n')
+
+                    result = "empty"
+                    if "SV-COMP result: unknown" in output.stdout:
+                        result = "unknown"
+                    if "SV-COMP result: true" in output.stdout:
+                        result = "True"
+                    if "SV-COMP result: false" in output.stdout:
+                        result = "False"
+                    outfile.write(str(i) + ',' + spec['input_files'] + ',' + str(end - start) + ',' + str(first) + ',' + str(firstTime) + ',' + str(result) + ',' + str(p["expected_verdict"]) + '\n')
                     i += 1
 
 
-def goblint_svcomp_datarace_timings():
-    outfile = open(os.path.dirname(__file__) + '/data/goblint_svcomp_datarace_timings.txt', 'w')
+def goblint_timings(property):
+    outfile = open(os.path.dirname(__file__) + '/data/goblint_' + property + '_timings.txt', 'w')
     i = 1
     for file in os.listdir(svbench_path + '/c/goblint-regression'):
         if file.endswith('.yml'):
             spec = yaml.safe_load(open(svbench_path + '/c/goblint-regression/' + file, 'r'))
             for p in spec["properties"]:
-                if p["property_file"] == "../properties/no-data-race.prp" and "expected_verdict" in p:
+                if p["property_file"] == "../properties/" + property + ".prp" and "expected_verdict" in p:
                     start = time.perf_counter()
-                    subprocess.run([analyzer_path, '--conf', os.path.dirname(__file__) + '/../../conf/svcomp.json', '--set', 'restart.enabled', 'true', '--set', 'ana.specification', svbench_path + '/c/properties/no-data-race.prp', svbench_path + '/c/goblint-regression/' + spec['input_files']])
+                    output = subprocess.run([analyzer_path, '--conf', os.path.dirname(__file__) + '/../../conf/svcomp.json', '--set', 'restart.enabled', 'true', '--set', 'ana.specification', svbench_path + '/c/properties/no-data-race.prp', svbench_path + '/c/goblint-regression/' + spec['input_files']], capture_output=True, text=True)
                     end = time.perf_counter()
-                    outfile.write(str(i) + ',' + spec['input_files'] + ',' + str(end - start) + '\n')
-                    i += 1
-
-
-# svcomp no-overflow
-def autotune_svcomp_nooverflow_timings():
-    outfile = open(os.path.dirname(__file__) + '/data/Autotune_svcomp_nooverflow_timings.txt', 'w')
-    i = 1
-    for file in os.listdir(svbench_path + '/c/goblint-regression'):
-        if file.endswith('.yml'):
-            spec = yaml.safe_load(open(svbench_path + '/c/goblint-regression/' + file, 'r'))
-            for p in spec["properties"]:
-                if p["property_file"] == "../properties/no-overflow.prp" and "expected_verdict" in p:
-                    start = time.perf_counter()
-                    first, firstrunTime = restart.loop([os.path.dirname(__file__) + '/start.json'], svbench_path + '/c/goblint-regression/' + spec['input_files'], svbench_path + '/c/properties/no-overflow.prp', True, 120, 60, 2, False, timing=True)
-                    end = time.perf_counter()
-                    outfile.write(str(i) + ',' + spec['input_files'] + ',' + str(end - start) + ',' + str(first) + ',' + str(firstrunTime) + '\n')
-                    i += 1
-
-
-def conflist_svcomp_nooverflow_timings():
-    outfile = open(os.path.dirname(__file__) + '/data/conflist_svcomp_nooverflow_timings.txt', 'w')
-    i = 1
-    for file in os.listdir(svbench_path + '/c/goblint-regression'):
-        if file.endswith('.yml'):
-            spec = yaml.safe_load(open(svbench_path + '/c/goblint-regression/' + file, 'r'))
-            for p in spec["properties"]:
-                if p["property_file"] == "../properties/no-overflow.prp" and "expected_verdict" in p:
-                    start = time.perf_counter()
-                    first, firstrunTime = restart.loop([os.path.dirname(__file__) + '/start.json',os.path.dirname(__file__) + '/../../conf/svcomp.json'], svbench_path + '/c/goblint-regression/' + spec['input_files'], svbench_path + '/c/properties/no-overflow.prp', False, 120, 60, 2, False, timing=True)
-                    end = time.perf_counter()
-                    outfile.write(str(i) + ',' + spec['input_files'] + ',' + str(end - start) + ',' + str(first) + ',' + str(firstrunTime) + '\n')
-                    i += 1
-
-
-def goblint_svcomp_nooverflow_timings():
-    outfile = open(os.path.dirname(__file__) + '/data/goblint_svcomp_nooverflow_timings.txt', 'w')
-    i = 1
-    for file in os.listdir(svbench_path + '/c/goblint-regression'):
-        if file.endswith('.yml'):
-            spec = yaml.safe_load(open(svbench_path + '/c/goblint-regression/' + file, 'r'))
-            for p in spec["properties"]:
-                if p["property_file"] == "../properties/no-overflow.prp" and "expected_verdict" in p:
-                    start = time.perf_counter()
-                    subprocess.run([analyzer_path, '--conf', os.path.dirname(__file__) + '/../../conf/svcomp.json', '--set', 'restart.enabled', 'true', '--set', 'ana.specification', svbench_path + '/c/properties/no-overflow.prp', svbench_path + '/c/goblint-regression/' + spec['input_files']])
-                    end = time.perf_counter()
-                    outfile.write(str(i) + ',' + spec['input_files'] + ',' + str(end - start) + '\n')
-                    i += 1
-
-# svcomp unreach-call
-def autotune_svcomp_unreachcall_timings():
-    outfile = open(os.path.dirname(__file__) + '/data/Autotune_svcomp_unreachcall_timings.txt', 'w')
-    i = 1
-    for file in os.listdir(svbench_path + '/c/goblint-regression'):
-        if file.endswith('.yml'):
-            spec = yaml.safe_load(open(svbench_path + '/c/goblint-regression/' + file, 'r'))
-            for p in spec["properties"]:
-                if p["property_file"] == "../properties/unreach-call.prp" and "expected_verdict" in p:
-                    start = time.perf_counter()
-                    first, firstrunTime = restart.loop([os.path.dirname(__file__) + '/start.json'], svbench_path + '/c/goblint-regression/' + spec['input_files'], svbench_path + '/c/properties/unreach-call.prp', True, 120, 60, 2, False, timing=True)
-                    end = time.perf_counter()
-                    outfile.write(str(i) + ',' + spec['input_files'] + ',' + str(end - start) + ',' + str(first) + ',' + str(firstrunTime) + '\n')
-                    i += 1
-
-
-def conflist_svcomp_unreachcall_timings():
-    outfile = open(os.path.dirname(__file__) + '/data/conflist_svcomp_unreachcall_timings.txt', 'w')
-    i = 1
-    for file in os.listdir(svbench_path + '/c/goblint-regression'):
-        if file.endswith('.yml'):
-            spec = yaml.safe_load(open(svbench_path + '/c/goblint-regression/' + file, 'r'))
-            for p in spec["properties"]:
-                if p["property_file"] == "../properties/unreach-call.prp" and "expected_verdict" in p:
-                    start = time.perf_counter()
-                    first, firstrunTime = restart.loop([os.path.dirname(__file__) + '/start.json',os.path.dirname(__file__) + '/../../conf/svcomp.json'], svbench_path + '/c/goblint-regression/' + spec['input_files'], svbench_path + '/c/properties/unreach-call.prp', False, 120, 60, 2, False, timing=True)
-                    end = time.perf_counter()
-                    outfile.write(str(i) + ',' + spec['input_files'] + ',' + str(end - start) + ',' + str(first) + ',' + str(firstrunTime) + '\n')
-                    i += 1
-
-
-def goblint_svcomp_unreachcall_timings():
-    outfile = open(os.path.dirname(__file__) + '/data/goblint_svcomp_unreachcall_timings.txt', 'w')
-    i = 1
-    for file in os.listdir(svbench_path + '/c/goblint-regression'):
-        if file.endswith('.yml'):
-            spec = yaml.safe_load(open(svbench_path + '/c/goblint-regression/' + file, 'r'))
-            for p in spec["properties"]:
-                if p["property_file"] == "../properties/unreach-call.prp" and "expected_verdict" in p:
-                    start = time.perf_counter()
-                    subprocess.run([analyzer_path, '--conf', os.path.dirname(__file__) + '/../../conf/svcomp.json', '--set', 'restart.enabled', 'true', '--set', 'ana.specification', svbench_path + '/c/properties/unreach-call.prp', svbench_path + '/c/goblint-regression/' + spec['input_files']])
-                    end = time.perf_counter()
-                    outfile.write(str(i) + ',' + spec['input_files'] + ',' + str(end - start) + '\n')
+                    result = "empty"
+                    if "SV-COMP result: unknown" in output.stdout:
+                        result = "unknown"
+                    if "SV-COMP result: true" in output.stdout:
+                        result = "True"
+                    if "SV-COMP result: false" in output.stdout:
+                        result = "False"
+                    outfile.write(str(i) + ',' + spec['input_files'] + ',' + str(end - start) + ',' + str(result) + ',' + str(p["expected_verdict"]) + '\n')
                     i += 1
 
 
@@ -240,15 +182,9 @@ def main ():
     parser = argparse.ArgumentParser(description='Time goblint restart functionality.')
     parser.add_argument('--analyses', action='store_true', help='Measure single analysis runtimes.')
     parser.add_argument('--overhead', action='store_true', help='Measure overhead time of restart functionality.')
-    parser.add_argument('--autotune_svcomp_datarace_timings', action='store_true', help='test.')
-    parser.add_argument('--conflist_svcomp_datarace_timings', action='store_true', help='test.')
-    parser.add_argument('--goblint_svcomp_datarace_timings', action='store_true', help='test.')
-    parser.add_argument('--autotune_svcomp_nooverflow_timings', action='store_true', help='test.')
-    parser.add_argument('--conflist_svcomp_nooverflow_timings', action='store_true', help='test.')
-    parser.add_argument('--goblint_svcomp_nooverflow_timings', action='store_true', help='test.')
-    parser.add_argument('--autotune_svcomp_unreachcall_timings', action='store_true', help='test.')
-    parser.add_argument('--conflist_svcomp_unreachcall_timings', action='store_true', help='test.')
-    parser.add_argument('--goblint_svcomp_unreachcall_timings', action='store_true', help='test.')
+    parser.add_argument('--autotune_timings', action='store_true', help='test.')
+    parser.add_argument('--conflist_timings', action='store_true', help='test.')
+    parser.add_argument('--goblint_timings', action='store_true', help='test.')
     parser.add_argument('--test', action='store_true', help='test.')
     args = parser.parse_args()
 
@@ -258,24 +194,18 @@ def main ():
         overhead()
     if args.test:
         test()
-    if args.autotune_svcomp_datarace_timings:
-        autotune_svcomp_datarace_timings()
-    if args.conflist_svcomp_datarace_timings:
-        conflist_svcomp_datarace_timings()
-    if args.goblint_svcomp_datarace_timings:
-        goblint_svcomp_datarace_timings()
-    if args.autotune_svcomp_nooverflow_timings:
-        autotune_svcomp_nooverflow_timings()
-    if args.conflist_svcomp_nooverflow_timings:
-        conflist_svcomp_nooverflow_timings()
-    if args.goblint_svcomp_nooverflow_timings:
-        goblint_svcomp_nooverflow_timings()
-    if args.autotune_svcomp_unreachcall_timings:
-        autotune_svcomp_unreachcall_timings()
-    if args.conflist_svcomp_unreachcall_timings:
-        conflist_svcomp_unreachcall_timings()
-    if args.goblint_svcomp_unreachcall_timings:
-        goblint_svcomp_unreachcall_timings()
+    if args.conflist_timings:
+        #conflist_timings("no-data-race")
+        conflist_timings("no-overflow")
+        conflist_timings("unreach-call")
+    if args.autotune_timings:
+        autotune_timings("no-data-race")
+        autotune_timings("no-overflow")
+        autotune_timings("unreach-call")
+    if args.goblint_timings:
+        goblint_timings("no-data-race")
+        goblint_timings("no-overflow")
+        goblint_timings("unreach-call")
 
 if __name__ == "__main__":
     main()
