@@ -411,12 +411,16 @@ module Base : GenericCreatingEqSolver =
           let revive_suspended () =
             (* Preliminary results must be revaluated *)
             GobMutex.lock prom_mutex;
+            let should_not_revive, should_revive = List.partition (fun ((is_primary, z, rsd, id) as prelim) ->
+                let y_infl = HM.find_option rsd.unknowns y |> Option.map_default (fun unknown -> !unknown.infl) VS.empty in
+                VS.is_empty y_infl
+              ) !prelim_vars in
             List.iter (fun (is_primary, z, rsd, id) ->
                 if tracing then trace "revive" "reviving job %d solving for %a" id S.Var.pretty_trace z;
                 (* Question: Is it on purpose that we do not give a new ID here? *)
                 promises := (Thread_pool.add_work pool (fun () -> solve_single is_primary z rsd id))::!promises
-              ) !prelim_vars;
-            prelim_vars := [];
+              ) should_revive;
+            prelim_vars := should_not_revive;
             GobMutex.unlock prom_mutex
           in
           (* TODO: Does doing it in this order somehow effect the locality of sides? *)
