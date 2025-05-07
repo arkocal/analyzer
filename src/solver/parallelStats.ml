@@ -93,46 +93,10 @@ struct
     Atomic.incr thread_starts;
     let t = Unix.gettimeofday () in
     thread_start_times.(thread_id) <- t
-  (* if (Atomic.get first_thread_activation_time) = 0.0 then  *)
-  (*   begin *)
-  (*     let success = Atomic.compare_and_set first_thread_activation_time 0.0 t in *)
-  (*     if (not success) then thread_starts_solve_event thread_id *)
-  (*     else ( *)
-  (*       Atomic.set last_thread_activation_update_time t; *)
-  (*       Atomic.incr active_threads; *)
-  (*     ) *)
-  (*   end *)
-  (* else ( *)
-  (*   let last_thread_activation_update_time_f = Atomic.get last_thread_activation_update_time in *)
-  (*   let success = Atomic.compare_and_set last_thread_activation_update_time last_thread_activation_update_time_f t in *)
-  (*   if (not success) then thread_starts_solve_event thread_id *)
-  (*   else *)
-  (*     begin *)
-  (*       let time_diff = t -. last_thread_activation_update_time_f in *)
-  (*       let cpu_time_since_last_update = time_diff *. (float_of_int @@ Atomic.get active_threads) in *)
-  (*       let current_total_thread_activation_time = Atomic.get total_thread_activation_time in *)
-  (*       let new_total_thread_activation_time = current_total_thread_activation_time +. cpu_time_since_last_update in *)
-  (*       Atomic.set total_thread_activation_time new_total_thread_activation_time; *)
-  (*       Atomic.incr active_threads; *)
-  (*     end *)
-  (* ) *)
 
   let rec thread_ends_solve_event thread_id =
     let t = Unix.gettimeofday () in
     thread_end_times.(thread_id) <- t
-  (* let last_thread_activation_update_time_f = Atomic.get last_thread_activation_update_time in *)
-  (* let success = Atomic.compare_and_set last_thread_activation_update_time last_thread_activation_update_time_f t in *)
-  (* if (not success) then thread_ends_solve_event thread_id *)
-  (* else *)
-  (*   begin *)
-  (*     let time_diff = t -. last_thread_activation_update_time_f in *)
-  (*     let cpu_time_since_last_update = time_diff *. (float_of_int @@ Atomic.get active_threads) in *)
-  (*     let current_total_thread_activation_time = Atomic.get total_thread_activation_time in *)
-  (*     let new_total_thread_activation_time = current_total_thread_activation_time +. cpu_time_since_last_update in *)
-  (*     Atomic.set total_thread_activation_time new_total_thread_activation_time; *)
-  (*     Atomic.decr active_threads; *)
-  (*   end *)
-
 
   (* solvers can assign this to print solver specific statistics using their data structures *)
   let print_solver_stats = ref (fun () -> ())

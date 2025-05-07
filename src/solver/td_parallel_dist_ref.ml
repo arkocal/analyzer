@@ -278,6 +278,11 @@ module Base : GenericCreatingEqSolver =
       (** solves for a single point-of-interest variable (x_poi) *)
       (* primary means user is interested in the result *)
       let rec solve_single is_primary x_poi sd job_id =
+        thread_starts_solve_event job_id;
+        solve_single_rec is_primary x_poi sd job_id;
+        thread_ends_solve_event job_id 
+
+      and solve_single_rec is_primary x_poi sd job_id =
         let obs = sd.obs_index in
         let unknowns = sd.unknowns in
 
@@ -417,8 +422,8 @@ module Base : GenericCreatingEqSolver =
               ) !prelim_vars in
             List.iter (fun (is_primary, z, rsd, id) ->
                 if tracing then trace "revive" "reviving job %d solving for %a" id S.Var.pretty_trace z;
-                (* Question: Is it on purpose that we do not give a new ID here? *)
-                promises := (Thread_pool.add_work pool (fun () -> solve_single is_primary z rsd id))::!promises
+                let new_id = Atomic.fetch_and_add job_id_counter 1 in
+                promises := (Thread_pool.add_work pool (fun () -> solve_single is_primary z rsd new_id))::!promises
               ) should_revive;
             prelim_vars := should_not_revive;
             GobMutex.unlock prom_mutex
@@ -482,6 +487,7 @@ module Base : GenericCreatingEqSolver =
         wait ()
       in
 
+
       (* beginning of main solve (initial mapping set above) *)
       (* let start_data = {(create_empty_data ()) with unknowns = HM.copy start_unknowns} in *)
       let start_data = create_start_data st in
@@ -505,7 +511,7 @@ module Base : GenericCreatingEqSolver =
               if tracing then trace "multivar" "solving for %a" S.Var.pretty_trace x;
               Domainslib.Task.run pool (fun () -> 
                   let first_id = Atomic.fetch_and_add job_id_counter 1 in
-                  solve_single true x start_data first_id; 
+                  solve_single true x start_data first_id;
                   (* make sure, everything is awaited, since promises could change during await_all *)
                   let rec await_changing_list () = 
                     GobMutex.lock prom_mutex;
@@ -538,6 +544,7 @@ module Base : GenericCreatingEqSolver =
       Logs.error "Sides processed %d" (Atomic.get sides_processed);
       Logs.error "Job id counter: %d" (Atomic.get job_id_counter);
 
+      print_stats ();
       stop_event ();
       (*print_data_verbose data "Data after iterate completed";
 
