@@ -30,19 +30,16 @@ module Base : DemandEqSolver =
     module VS = Set.Make (S.Var)
 
     (* TODO Introduce this module *)
-    (* open ParallelSolverStats (EqConstrSysFromDemandConstrSys (S)) (HM) *)
+    open ParallelStats.ParallelSolverStats
 
     exception CasFailException
 
-    let cas_success = Atomic.make 0
-    let cas_fail = Atomic.make 0
-    let count_iterations = Atomic.make 0
     (* Same as [Atomic.compare_and_set] but raises an exception on failure. *)
     let cas r seen v =
       if (Atomic.compare_and_set r seen v) then (
-        Atomic.fetch_and_add cas_success 1 |> ignore
+        cas_success_event (); 
       ) else (
-        Atomic.fetch_and_add cas_fail 1 |> ignore;
+        cas_fail_event ();
         raise CasFailException
       )
     (* if not (Atomic.compare_and_set r seen v) then raise CasFailException *)
@@ -77,6 +74,7 @@ module Base : DemandEqSolver =
     let job_id_counter = (Atomic.make 1)
 
     let solve st vs =
+      solver_start_event ();
       let nr_domains = GobConfig.get_int "solvers.td3.parallel_domains" in
       let nr_domains = if nr_domains = 0 then (Domain.recommended_domain_count ()) else nr_domains in
 
@@ -265,6 +263,7 @@ module Base : DemandEqSolver =
         in
 
         (* begining of iteration to update the value for x *)
+        start_iterate_event job_id;
         assert (not @@ is_global x);
         let x_state = Atomic.get x_atom in
 
@@ -372,6 +371,7 @@ module Base : DemandEqSolver =
       in
       solver ();
       Threadpool.finished_with pool;
+      solver_end_event ();
 
       (* After termination, only those variables are stable which are
        * - reachable from any of the queried variables vs, or
@@ -389,12 +389,14 @@ module Base : DemandEqSolver =
         Logs.newline ();
       );
 
-      Logs.error "Cas success: %d, Cas fail: %d" 
-        (Atomic.get cas_success) (Atomic.get cas_fail);
+      print_stats ();
       (* TODO reenable *)
       (* if GobConfig.get_bool "dbg.timing.enabled" then LHM.print_stats data; *)
 
-      HM.map (fun _ (s: DefaultState.t) -> s.value) data_ht
+      let solution = HM.map (fun _ (s: DefaultState.t) -> s.value) data_ht in
+      Logs.info "Solver finished with %d unknowns." (HM.length solution);
+      Logs.info "Number of jobs: %d" (Atomic.get job_id_counter);
+      solution
   end
 
 let () =
