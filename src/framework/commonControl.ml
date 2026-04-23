@@ -1,5 +1,7 @@
 (** Shared analysis infrastructure for control.ml and fwdControl.ml. *)
 
+open GoblintCil
+open MyCFG
 open Analyses
 open GobConfig
 open SpecLifters
@@ -45,3 +47,24 @@ let make_spec_module ~fwd : (module Spec') Lazy.t = lazy (
   let module S1 = Spec2Spec' (S1) in
   (module S1)
 )
+
+(* This function was originally a part of the [AnalyzeCFG] module, but
+   now that [AnalyzeCFG] takes [Spec] as a functor parameter,
+   [analyze_loop] cannot reside in it anymore since each invocation of
+   [get_spec] in the loop might/should return a different module, and we
+   cannot swap the functor parameter from inside [AnalyzeCFG]. *)
+let make_analyze_loop get_spec analyze_body =
+  let rec loop (module CFG : CfgBidirSkip) file fs change_info =
+    try
+      let (module Spec : Spec') = get_spec () in
+      analyze_body (module CFG : CfgBidirSkip) (module Spec : Spec') file fs change_info
+    with Refinement.RestartAnalysis ->
+      loop (module CFG) file fs change_info
+  in
+  loop
+
+let analyze analyze_loop change_info file fs =
+  Logs.debug "Generating the control flow graph.";
+  let (module CFG : CfgBidirSkip) = CfgTools.compute_cfg file in
+  MyCFG.current_cfg := (module CFG);
+  analyze_loop (module CFG : CfgBidirSkip) file fs change_info

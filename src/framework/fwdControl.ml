@@ -627,27 +627,11 @@ struct
     Timing.wrap "result output" (ResultOutput.output (lazy local_xml) liveness gh make_global_fast_xml) (module FileCfg)
 end
 
-(* This function was originally a part of the [AnalyzeCFG] module, but
-   now that [AnalyzeCFG] takes [Spec] as a functor parameter,
-   [analyze_loop] cannot reside in it anymore since each invocation of
-   [get_spec] in the loop might/should return a different module, and we
-   cannot swap the functor parameter from inside [AnalyzeCFG]. *)
-let rec analyze_loop (module CFG : CfgBidirSkip) file fs change_info =
-  try
-    let (module Spec) = get_spec () in
-    let module A = AnalyzeCFG (CFG) (Spec) (struct let increment = change_info end) in
-    GobConfig.with_immutable_conf (fun () -> A.analyze file fs)
-  with Refinement.RestartAnalysis ->
-    (* Tail-recursively restart the analysis again, when requested.
-        All solving starts from scratch.
-        Whoever raised the exception should've modified some global state
-        to do a more precise analysis next time. *)
-    (* TODO: do some more incremental refinement and reuse parts of solution *)
-    analyze_loop (module CFG) file fs change_info
+let make_a (module CFG : CfgBidirSkip) (module Spec : Spec') file fs change_info =
+  let module A = AnalyzeCFG (CFG) (Spec) (struct let increment = change_info end) in
+  GobConfig.with_immutable_conf (fun () -> A.analyze file fs)
+
+let analyze_loop = CommonControl.make_analyze_loop get_spec make_a
 
 (** The main function to perform the selected analyses. *)
-let analyze change_info (file: file) fs =
-  Logs.debug "Generating the control flow graph.";
-  let (module CFG) = CfgTools.compute_cfg file in
-  MyCFG.current_cfg := (module CFG);
-  analyze_loop (module CFG) file fs change_info
+let analyze change_info file fs = CommonControl.analyze analyze_loop change_info file fs
