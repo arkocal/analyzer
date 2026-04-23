@@ -1,4 +1,5 @@
 open Goblint_constraint.ConstrSys
+open Messages
 
 (* TODO make these config options *)
 
@@ -150,25 +151,53 @@ module SolverLocals (Sys: FwdGlobConstrSys)
 
   type updated_contribution = Updated of t | NotUpdated of t
 
+  let update_count = ref 0
+  let update_depth = ref 0
+
   let update_contribution contributor y d always_warrow =
+    incr update_count;
+    let n = !update_count in
+    let depth = !update_depth in
+    let contributor_id = Node.show_id (System.LVar.node contributor) in
+    let y_id = Node.show_id (System.LVar.node y) in
     let y_record = get y in
     let old_contribution = get_contribution contributor y_record in
+    let path =
+      if not (always_warrow || y_record.called) then "overwrite"
+      else if D.leq d old_contribution.value then "narrow"
+      else if D.leq old_contribution.value d then "widen"
+      else if old_contribution.update_gas > 0 then "update"
+      else "widen(incomparable)"
+    in
+    if tracing then (
+      trace "prec" "[#%d d=%d] local update: %s -> %s" n depth contributor_id y_id;
+      trace "prec" "[#%d d=%d] value before: %a" n depth D.pretty y_record.loc_value;
+      trace "prec" "[#%d d=%d] contribution from %s before: %a" n depth contributor_id D.pretty old_contribution.value;
+      trace "prec" "[#%d d=%d] update value: %a" n depth D.pretty d;
+      trace "prec" "[#%d d=%d] path: %s" n depth path;
+    );
     let new_contribution =
       (* Automatic detection of warrowing points *)
-      if (always_warrow || y_record.called) then warrow old_contribution d 
+      if (always_warrow || y_record.called) then warrow old_contribution d
       else {old_contribution with value=d} in
-
-    if (D.equal new_contribution.value old_contribution.value) then NotUpdated y_record
-    else (
+    if tracing then
+      trace "prec" "[#%d d=%d] contribution from %s after: %a" n depth contributor_id D.pretty new_contribution.value;
+    if (D.equal new_contribution.value old_contribution.value) then (
+      if tracing then trace "prec" "[#%d d=%d] contribution unchanged, not propagating" n depth;
+      NotUpdated y_record
+    ) else (
       LM.replace y_record.loc_from contributor new_contribution;
-      let new_y = if D.leq old_contribution.value new_contribution.value then 
+      let new_y = if D.leq old_contribution.value new_contribution.value then
           (* If the contribution is strictly greater than previous,
                the join with the new contribution is equal to the value on the else
                branch, but much cheaper to calculate *)
           D.join y_record.loc_value new_contribution.value
         else construct_value y_record in
-      if (D.equal y_record.loc_value new_y) then NotUpdated y_record
-      else (
+      if (D.equal y_record.loc_value new_y) then (
+        if tracing then trace "prec" "[#%d d=%d] value unchanged: %a" n depth D.pretty new_y;
+        NotUpdated y_record
+      ) else (
+        if tracing then trace "prec" "[#%d d=%d] value after: %a" n depth D.pretty new_y;
         y_record.loc_value <- new_y;
         Updated y_record
       )
@@ -540,7 +569,8 @@ module BaseFwdSolver (System: FwdGlobConstrSys) = struct
     );
 
     GM.iter (set_global x) global_updates;
-    LM.iter (set_local x) local_updates;
+    LM.iter (set_local x) local_updates
     (* possibly better with reversed ordering *)
+
 end
 
