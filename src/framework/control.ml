@@ -11,47 +11,9 @@ open Goblint_constraint.Translators
 open Goblint_constraint.SolverTypes
 open GobConfig
 open Constraints
-open SpecLifters
-
-module type S2S = Spec2Spec
 
 (* spec is lazy, so HConsed table in Hashcons lifters is preserved between analyses in server mode *)
-let spec_module: (module Spec') Lazy.t = lazy (
-  GobConfig.building_spec := true;
-  let arg_enabled = get_bool "exp.arg.enabled" in
-  let termination_enabled = List.mem "termination" (get_string_list "ana.activated") in (* check if loop termination analysis is enabled*)
-  (* apply functor F on module X if opt is true *)
-  let lift opt (module F : S2S) (module X : Spec) = (module (val if opt then (module F (X)) else (module X) : Spec) : Spec) in
-  let module S1 =
-    (val
-      (module MCP.MCP2 : Spec)
-      |> lift (get_int "ana.context.gas_value" >= 0) (ContextGasLifter.get_gas_lifter ())
-      |> lift true (module WidenContextLifterSide) (* option checked in functor *)
-      |> lift (get_int "ana.widen.delay.local" > 0) (module WideningDelay.DLifter)
-      (* hashcons before witness to reduce duplicates, because witness re-uses contexts in domain and requires tag for PathSensitive3 *)
-      |> lift (get_bool "ana.opt.hashcons" || arg_enabled) (module HashconsContextLifter)
-      |> lift (get_bool "ana.opt.hashcached") (module HashCachedContextLifter)
-      |> lift arg_enabled (module HashconsLifter)
-      |> lift arg_enabled (module ArgConstraints.PathSensitive3)
-      |> lift (not arg_enabled) (module PathSensitive2)
-      |> lift (get_bool "ana.dead-code.branches") (module DeadBranchLifter)
-      |> lift true (module DeadCodeLifter)
-      |> lift (get_bool "dbg.slice.on") (module LevelSliceLifter)
-      |> lift (get_bool "ana.opt.equal" && not (get_bool "ana.opt.hashcons")) (module OptEqual)
-      |> lift (get_bool "ana.opt.hashcons") (module HashconsLifter)
-      (* Widening tokens must be outside of hashcons, because widening token domain ignores token sets for identity, so hashcons doesn't allow adding tokens.
-         Also must be outside of deadcode, because deadcode splits (like mutex lock event) don't pass on tokens. *)
-      |> lift (get_bool "ana.widen.tokens") (module WideningTokenLifter.Lifter)
-      |> lift true (module LongjmpLifter.Lifter)
-      |> lift termination_enabled (module RecursionTermLifter.Lifter) (* Always activate the recursion termination analysis, when the loop termination analysis is activated*)
-      |> lift (get_int "ana.widen.delay.global" > 0) (module WideningDelay.GLifter)
-    )
-  in
-  GobConfig.building_spec := false;
-  ControlSpecC.control_spec_c := (module S1.C);
-  let module S1 = Spec2Spec' (S1) in
-  (module S1)
-)
+let spec_module = CommonControl.make_spec_module ~fwd:false
 
 (** gets Spec for current options *)
 let get_spec (): (module Spec') =
