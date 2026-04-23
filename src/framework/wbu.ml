@@ -93,17 +93,16 @@ module FwdWBuSolver (System: FwdGlobConstrSys) = struct
         if rloc.aborted then (iterate[@tailcall]) x
       )
 
+  module Checker = FwdCommon.Checker(System)(Lcl)(Gbl)
+
   let solve localinit globalinit start_unknowns =
     solver_start_event ();
-
     List.iter Lcl.init localinit;
     List.iter Gbl.init globalinit;
     List.iter WorkSet.add start_unknowns;
     WorkSet.map_until_empty iterate;
-    let solution = (Lcl.to_seq (), Gbl.to_seq ()) in
     solver_end_event ();
-    solution
-
-  module Checker = FwdCommon.Checker(System)(Lcl)(Gbl)
-  let check = Checker.check
+    AnalysisState.should_warn := true;
+    AnalysisState.postsolving := true;
+    Checker.check localinit globalinit start_unknowns
 end
