@@ -59,6 +59,14 @@ struct
 
   open SpecSys
 
+  module CSS = struct
+    include SpecSys
+    let g_spec = EQSys.G.spec
+    let gvar_spec = EQSys.GVar.spec
+    let g_create_spec = EQSys.G.create_spec
+  end
+  module I = CommonControl.CommonInits (CSS)
+
   (* The solver *)
   module PostSolverArg =
   struct
@@ -236,42 +244,6 @@ struct
 
     AnalysisState.should_warn := false; (* reset for server mode *)
 
-    (* extract global xml from result *)
-    let make_global_fast_xml f g =
-      let open Printf in
-      let print_globals k v =
-        fprintf f "\n<glob><key>%s</key>%a</glob>" (XmlUtil.escape (EQSys.GVar.show k)) EQSys.G.printXml v;
-      in
-      GHT.iter print_globals g
-    in
-
-    (* add extern variables to local state *)
-    let do_extern_inits man (file : file) : Spec.D.t =
-      let module VS = Set.Make (Basetype.Variables) in
-      let add_glob s = function
-          GVar (v,_,_) -> VS.add v s
-        | _            -> s
-      in
-      let vars = foldGlobals file add_glob VS.empty in
-      let set_bad v st =
-        Spec.assign {man with local = st} (var v) MyCFG.unknown_exp
-      in
-      let is_std = function
-        | {vname = ("__tzname" | "__daylight" | "__timezone"); _} (* unix time.h *)
-        | {vname = ("tzname" | "daylight" | "timezone"); _} (* unix time.h *)
-        | {vname = "getdate_err"; _} (* unix time.h, but somehow always in MacOS even without include *)
-        | {vname = ("stdin" | "stdout" | "stderr"); _} (* standard stdio.h *)
-        | {vname = ("optarg" | "optind" | "opterr" | "optopt" ); _} (* unix unistd.h *)
-        | {vname = ("__environ"); _} -> (* Linux Standard Base Core Specification *)
-          true
-        | _ -> false
-      in
-      let add_externs s = function
-        | GVarDecl (v,_) when not (VS.mem v vars || isFunctionType v.vtype) && not (get_bool "exp.hide-std-globals" && is_std v) -> set_bad v s
-        | _ -> s
-      in
-      foldGlobals file add_externs (Spec.startstate MyCFG.dummy_func.svar)
-    in
 
     (* Simulate globals before analysis. *)
     (* TODO: make extern/global inits part of constraint system so all of this would be unnecessary. *)
@@ -283,76 +255,7 @@ struct
     in
     (* Old-style global function for context.
      * This indirectly prevents global initializers from depending on each others' global side effects, which would require proper solving. *)
-    let getg v = EQSys.G.bot () in
-
-    (* analyze cil's global-inits function to get a starting state *)
-    let do_global_inits (file: file) : Spec.D.t * fundec list =
-      let man =
-        { ask     = (fun (type a) (q: a Queries.t) -> Queries.Result.top q)
-        ; emit   = (fun _ -> failwith "Cannot \"emit\" in global initializer context.")
-        ; node    = MyCFG.dummy_node
-        ; prev_node = MyCFG.dummy_node
-        ; control_context = (fun () -> man_failwith "Global initializers have no context.")
-        ; context = (fun () -> man_failwith "Global initializers have no context.")
-        ; edge    = MyCFG.Skip
-        ; local   = Spec.D.top ()
-        ; global  = (fun g -> EQSys.G.spec (getg (EQSys.GVar.spec g)))
-        ; spawn   = (fun ?(multiple=false) _ -> failwith "Global initializers should never spawn threads. What is going on?")
-        ; split   = (fun _ -> failwith "Global initializers trying to split paths.")
-        ; sideg   = (fun g d -> sideg (EQSys.GVar.spec g) (EQSys.G.create_spec d))
-        }
-      in
-      let edges = CfgTools.getGlobalInits file in
-      Logs.debug "Executing %d assigns." (List.length edges);
-      let funs = ref [] in
-      (*let count = ref 0 in*)
-      let transfer_func (st : Spec.D.t) (loc, edge) : Spec.D.t =
-        if M.tracing then M.trace "con" "Initializer %a" CilType.Location.pretty loc;
-        (*incr count;
-          if (get_bool "dbg.verbose")&& (!count mod 1000 = 0)  then Printf.printf "%d %!" !count;    *)
-        match edge with
-        | MyCFG.Entry func        ->
-          if M.tracing then M.trace "global_inits" "Entry %a" d_lval (var func.svar);
-          Spec.body {man with local = st} func
-        | MyCFG.Assign (lval,exp) ->
-          if M.tracing then M.trace "global_inits" "Assign %a = %a" d_lval lval d_exp exp;
-          begin match lval, exp with
-            | (Var v,o), (AddrOf (Var f,NoOffset))
-              when v.vstorage <> Static && isFunctionType f.vtype ->
-              (try funs := Cilfacade.find_varinfo_fundec f :: !funs with Not_found -> ())
-            | _ -> ()
-          end;
-          let res = Spec.assign {man with local = st} lval exp in
-          (* Needed for privatizations (e.g. None) that do not side immediately *)
-          let res' = Spec.sync {man with local = res} `Normal in
-          if M.tracing then M.trace "global_inits" "\t\t -> state:%a" Spec.D.pretty res;
-          res'
-        | _                       -> failwith "Unsupported global initializer edge"
-      in
-      let transfer_func st (loc, edge) =
-        let old_loc = !Goblint_tracing.current_loc in
-        Goblint_tracing.current_loc := loc;
-        (* TODO: next_loc? *)
-        Goblint_backtrace.protect ~mark:(fun () -> Constraints.TfLocation loc) ~finally:(fun () ->
-            Goblint_tracing.current_loc := old_loc;
-          ) (fun () ->
-            transfer_func st (loc, edge)
-          )
-      in
-      let with_externs = do_extern_inits man file in
-      (*if (get_bool "dbg.verbose") then Printf.printf "Number of init. edges : %d\nWorking:" (List.length edges);    *)
-      let result : Spec.D.t = List.fold_left transfer_func with_externs edges in
-      if M.tracing then M.trace "global_inits" "startstate: %a" Spec.D.pretty result;
-      result, !funs
-    in
-
-    let print_globals glob =
-      let out = M.get_out (Spec.name ()) !M.out in
-      let print_one v st =
-        ignore (Pretty.fprintf out "%a -> %a\n" EQSys.GVar.pretty_trace v EQSys.G.pretty st)
-      in
-      GHT.iter print_one glob
-    in
+    let getg_bot (_ : EQSys.GVar.t) : EQSys.G.t = EQSys.G.bot () in
 
     (* real beginning of the [analyze] function *)
     if get_bool "ana.sv-comp.enabled" then
@@ -393,87 +296,16 @@ struct
 
     let startstate, more_funs =
       Logs.debug "Initializing %d globals." (CfgTools.numGlobals file);
-      Timing.wrap "global_inits" do_global_inits file
+      Timing.wrap "global_inits" (I.do_global_inits ~getg:getg_bot ~sideg) file
     in
 
     let otherfuns = if get_bool "kernel" then otherfuns @ more_funs else otherfuns in
 
-    let enter_with st fd =
-      let st = st fd.svar in
-      let man =
-        { ask     = (fun (type a) (q: a Queries.t) -> Queries.Result.top q)
-        ; emit   = (fun _ -> failwith "Cannot \"emit\" in enter_with context.")
-        ; node    = MyCFG.dummy_node
-        ; prev_node = MyCFG.dummy_node
-        ; control_context = (fun () -> man_failwith "enter_with has no control_context.")
-        ; context = Spec.startcontext
-        ; edge    = MyCFG.Skip
-        ; local   = st
-        ; global  = (fun g -> EQSys.G.spec (getg (EQSys.GVar.spec g)))
-        ; spawn   = (fun ?(multiple=false) _ -> failwith "Bug1: Using enter_func for toplevel functions with 'otherstate'.")
-        ; split   = (fun _ -> failwith "Bug2: Using enter_func for toplevel functions with 'otherstate'.")
-        ; sideg   = (fun g d -> sideg (EQSys.GVar.spec g) (EQSys.G.create_spec d))
-        }
-      in
-      let args = List.map (fun x -> MyCFG.unknown_exp) fd.sformals in
-      let ents = Spec.enter man None fd args in
-      List.map (fun (_,s) -> fd, s) ents
-    in
-
-    (try MyCFG.dummy_func.svar.vdecl <- (List.hd otherfuns).svar.vdecl with Failure _ -> ());
-
-    let startvars =
-      if startfuns = []
-      then [[MyCFG.dummy_func, startstate]]
-      else
-        let morph f = Spec.morphstate f startstate in
-        List.map (enter_with morph) startfuns
-    in
-
-    let exitvars = List.map (enter_with Spec.exitstate) exitfuns in
-    let otherstate st v =
-      let man =
-        { ask     = (fun (type a) (q: a Queries.t) -> Queries.Result.top q)
-        ; emit   = (fun _ -> failwith "Cannot \"emit\" in otherstate context.")
-        ; node    = MyCFG.dummy_node
-        ; prev_node = MyCFG.dummy_node
-        ; control_context = (fun () -> man_failwith "enter_func has no context.")
-        ; context = (fun () -> man_failwith "enter_func has no context.")
-        ; edge    = MyCFG.Skip
-        ; local   = st
-        ; global  = (fun g -> EQSys.G.spec (getg (EQSys.GVar.spec g)))
-        ; spawn   = (fun ?(multiple=false) _ -> failwith "Bug1: Using enter_func for toplevel functions with 'otherstate'.")
-        ; split   = (fun _ -> failwith "Bug2: Using enter_func for toplevel functions with 'otherstate'.")
-        ; sideg   = (fun g d -> sideg (EQSys.GVar.spec g) (EQSys.G.create_spec d))
-        }
-      in
-      (* TODO: don't hd *)
-      List.hd (Spec.threadenter man ~multiple:false None v [])
-      (* TODO: do threadspawn to mainfuns? *)
-    in
-    let prestartstate = Spec.startstate MyCFG.dummy_func.svar in (* like in do_extern_inits *)
-    let othervars = List.map (enter_with (otherstate prestartstate)) otherfuns in
-    let startvars = List.concat (startvars @ exitvars @ othervars) in
-    if startvars = [] then
-      failwith "BUG: Empty set of start variables; may happen if enter_func of any analysis returns an empty list.";
+    let startvars = I.compute_startvars ~getg ~sideg startstate startfuns exitfuns otherfuns in
 
     AnalysisState.global_initialization := false;
 
-    let man e =
-      { ask     = (fun (type a) (q: a Queries.t) -> Queries.Result.top q)
-      ; emit   = (fun _ -> failwith "Cannot \"emit\" in enter_with context.")
-      ; node    = MyCFG.dummy_node
-      ; prev_node = MyCFG.dummy_node
-      ; control_context = (fun () -> man_failwith "enter_with has no control_context.")
-      ; context = Spec.startcontext
-      ; edge    = MyCFG.Skip
-      ; local   = e
-      ; global  = (fun g -> EQSys.G.spec (getg (EQSys.GVar.spec g)))
-      ; spawn   = (fun ?(multiple=false) _ -> failwith "Bug1: Using enter_func for toplevel functions with 'otherstate'.")
-      ; split   = (fun _ -> failwith "Bug2: Using enter_func for toplevel functions with 'otherstate'.")
-      ; sideg   = (fun g d -> sideg (EQSys.GVar.spec g) (EQSys.G.create_spec d))
-      }
-    in
+    let man e = I.make_man ~getg ~sideg e in
     let startvars' =
       if get_bool "exp.forward" then
         List.map (fun (n,e) -> (MyCFG.FunctionEntry n, Spec.context (man e) n e)) startvars
@@ -633,7 +465,7 @@ struct
         M.warn_noloc ~category:Deadcode "Function 'main' does not return";
 
       if get_bool "dump_globs" then
-        print_globals gh;
+        I.print_globals gh;
 
       (* run activated transformations with the analysis result *)
       let active_transformations = get_string_list "trans.activated" in
@@ -828,7 +660,7 @@ struct
     if get_string "result" <> "none" then Logs.debug "Generating output: %s" (get_string "result");
 
     Messages.finalize ();
-    Timing.wrap "result output" (ResultOutput.output (lazy local_xml) liveness gh make_global_fast_xml) (module FileCfg)
+    Timing.wrap "result output" (ResultOutput.output (lazy local_xml) liveness gh I.make_global_fast_xml) (module FileCfg)
 end
 
 let make_a (module CFG : CfgBidirSkip) (module Spec : Spec') file fs change_info =
