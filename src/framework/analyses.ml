@@ -628,6 +628,22 @@ sig
   module GHT: BatHashtbl.S with type key = EQSys.GVar.t
 end
 
+(** Minimal interface for sharing initialization logic between [SpecSys] and [FwdSpecSys].
+    [BaseGlobConstrSys] exposes [G] and [GVar] only as abstract lattices; the three
+    accessors below are present on both concrete equation system types but absent from
+    any shared signature, making this extension necessary. *)
+module type CommonSpecSys =
+sig
+  module Spec: Spec'
+  module EQSys: Goblint_constraint.ConstrSys.BaseGlobConstrSys
+    with module D = Spec.D
+  val g_spec: EQSys.G.t -> Spec.G.t
+  val gvar_spec: Spec.V.t -> EQSys.GVar.t
+  val g_create_spec: Spec.G.t -> EQSys.G.t
+  module LHT: BatHashtbl.S with type key = EQSys.LVar.t
+  module GHT: BatHashtbl.S with type key = EQSys.GVar.t
+end
+
 module type SpecSysSol =
 sig
   module SpecSys: SpecSys
