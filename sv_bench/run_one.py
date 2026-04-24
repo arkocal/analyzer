@@ -5,6 +5,7 @@ import argparse
 import json
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -62,13 +63,15 @@ def main() -> None:
     timed_out = False
     returned = "unknown"
     t0 = time.monotonic()
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
-        m = SVCOMP_RESULT_RE.search(result.stdout + result.stderr)
-        if m:
-            returned = m.group(1).strip()
-    except subprocess.TimeoutExpired:
-        timed_out = True
+    with tempfile.TemporaryDirectory() as tmpdir:
+        full_cmd = cmd + ["--set", "goblint-dir", tmpdir]
+        try:
+            result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=args.timeout)
+            m = SVCOMP_RESULT_RE.search(result.stdout + result.stderr)
+            if m:
+                returned = m.group(1).strip()
+        except subprocess.TimeoutExpired:
+            timed_out = True
     runtime = round(time.monotonic() - t0, 2)
 
     row = {
