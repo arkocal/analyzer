@@ -1,0 +1,16 @@
+timeout: 60
+goblint: ../goblint
+sv_benchmarks: ../../sv-benchmarks/c
+
+base_config: ../conf/svcomp25.json
+
+configs:
+  - ../wbu.json
+  - ../bu.json
+  - ../fwd.json
+  - ../td3.json
+
+tasks:
+  - ../../sv-benchmarks/c/loop-simple/*.yml
+  - ../../sv-benchmarks/c/array-examples/data_structures_*.yml
+  - ../../sv-benchmarks/c/goblint-regression/*.yml
