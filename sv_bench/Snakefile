@@ -16,32 +16,42 @@ SV_BENCH     = Path(BENCH["sv_benchmarks"]).resolve()
 BASE_CONFIG  = Path(BENCH["base_config"]).resolve() if BENCH.get("base_config") else None
 
 def _expand_set(set_file):
-    """Expand a .set file into resolved .yml paths."""
-    base = Path(set_file).resolve().parent
-    paths = []
-    for line in Path(set_file).read_text().splitlines():
+    """Expand a .set file into (resolved_path, set_name) pairs."""
+    set_file = Path(set_file).resolve()
+    base = set_file.parent
+    set_name = set_file.stem
+    pairs = []
+    for line in set_file.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        paths.extend(Path(m).resolve() for m in sorted(glob.glob(str(base / line), recursive=True)))
-    return paths
+        for m in sorted(glob.glob(str(base / line), recursive=True)):
+            pairs.append((Path(m).resolve(), set_name))
+    return pairs
 
 def _expand(patterns):
-    seen = set()
+    """Return (paths, sources) where sources maps each path to its origin set names."""
+    sources = {}  # path -> list[str], preserving insertion order of set names
     paths = []
     for pat in patterns:
         matches = sorted(glob.glob(pat, recursive=True)) or [pat]
         for m in matches:
             p = Path(m).resolve()
-            candidates = _expand_set(p) if p.suffix == ".set" else [p]
-            for c in candidates:
-                if c not in seen:
-                    seen.add(c)
-                    paths.append(c)
-    return paths
+            if p.suffix == ".set":
+                for c, set_name in _expand_set(p):
+                    sources.setdefault(c, [])
+                    if set_name not in sources[c]:
+                        sources[c].append(set_name)
+                    if c not in paths:
+                        paths.append(c)
+            else:
+                sources.setdefault(p, [])
+                if p not in paths:
+                    paths.append(p)
+    return paths, sources
 
-CONFIGS      = _expand(BENCH["configs"])
-TASK_FILES   = _expand(BENCH["tasks"])
+CONFIGS, _            = _expand(BENCH["configs"])
+TASK_FILES, TASK_SOURCES = _expand(BENCH["tasks"])
 
 
 # ── Prevent yaml from coercing bare true/false ───────────────────────────────
@@ -84,6 +94,7 @@ for cfg in CONFIGS:
                 "property":  prop_file.stem,
                 "prop_path": prop_file,
                 "expected":  str(prop["expected_verdict"]).lower(),
+                "sources":   "|".join(TASK_SOURCES.get(task_file, [])),
             })
 
 ALL_OUTPUTS = [
@@ -109,7 +120,7 @@ rule aggregate:
     output: "results/combined.csv"
     run:
         fieldnames = ["config", "task", "property", "expected",
-                      "returned", "timeout", "runtime", "solver_walltime", "rhs_evals"]
+                      "returned", "timeout", "runtime", "solver_walltime", "rhs_evals", "sources"]
         with open(output[0], "w", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
             writer.writeheader()
@@ -132,6 +143,7 @@ rule run_one:
             " --expected {expected}"
             " --sv-benchmarks {svb}"
             " --timeout {timeout}"
+            " --sources {sources}"
             " --output {out}",
             goblint=GOBLINT,
             base=BASE_CONFIG,
@@ -141,5 +153,6 @@ rule run_one:
             expected=r["expected"],
             svb=SV_BENCH,
             timeout=TIMEOUT,
+            sources=r["sources"],
             out=output[0],
         )

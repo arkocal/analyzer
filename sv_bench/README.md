@@ -25,5 +25,26 @@ This produces `results/combined.csv`. Jobs are skipped on re-run if already comp
 Run the snakemake step first, then open the notebook:
 
 ```
-uv run jupyter notebook evaluate.ipynb
+uv run marimo edit evaluate.py
 ```
+
+## Result data formats
+
+**`results/<config>/<task_key>/<property>.json`** — one file per run.
+- `task_key` encodes the task path relative to `sv_benchmarks`, with `/` replaced by `__`.
+- Fields: see combined.csv below.
+
+**`results/combined.csv`** — all runs aggregated into one file.
+
+| Column | Description |
+|---|---|
+| `config` | Config filename (e.g. `wbu.json`) |
+| `task` | Task path relative to `sv_benchmarks` |
+| `property` | Property stem (e.g. `unreach-call`) |
+| `expected` | Expected verdict (`true` / `false`) |
+| `returned` | Verdict returned by goblint, or `unknown` |
+| `timeout` | `True` if the run hit the timeout |
+| `runtime` | Wall time of the full goblint process (seconds) |
+| `solver_walltime` | Time between solver start and end events (seconds), `NaN` if not logged |
+| `rhs_evals` | Number of RHS evaluations by the solver, `NaN` if not logged |
+| `sources` | `\|`-separated list of `.set` files the task was drawn from; empty if specified directly |

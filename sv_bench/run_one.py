@@ -42,6 +42,7 @@ def main() -> None:
     parser.add_argument("--expected", required=True)
     parser.add_argument("--sv-benchmarks", required=True)
     parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument("--sources", default="")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
@@ -97,6 +98,7 @@ def main() -> None:
         "runtime": runtime,
         "solver_walltime": solver_walltime,
         "rhs_evals": rhs_evals,
+        "sources": args.sources,
     }
 
     Path(args.output).write_text(json.dumps(row))
