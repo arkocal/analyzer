@@ -504,6 +504,7 @@ module SolverStats (Sys: FwdGlobConstrSys) = struct
   let eval_rhs_event x = rhs_event_count := !rhs_event_count + 1
 
   let solver_start_event () =
+    rhs_event_count := 0;
     let starttime_ms = int_of_float (Unix.gettimeofday () *. 1000.) in
     Logs.info "Solver start: %d" starttime_ms
 

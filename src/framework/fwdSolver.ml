@@ -53,7 +53,7 @@ module FwdSolver (System: FwdGlobConstrSys) = struct
   let evaluate x =
     match System.system x with
     | None -> ()
-    | Some f -> wrapped f x
+    | Some f -> eval_rhs_event x; wrapped f x
 
   module Checker = FwdCommon.Checker(System)(Lcl)(Gbl)
 

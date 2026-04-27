@@ -84,6 +84,7 @@ module FwdWBuSolver (System: FwdGlobConstrSys) = struct
     match System.system x with
     | None -> ()
     | Some rhs -> (
+        eval_rhs_event x;
         incr Lcl.update_depth;
         rloc.called <- true;
         rloc.aborted <- false;

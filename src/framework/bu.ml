@@ -36,11 +36,12 @@ module FwdBuSolver (System: FwdGlobConstrSys) = struct
 
   and wrapped rhs x = (wrap get_local get_global set_local set_global) rhs x
 
-  and iterate x = 
+  and iterate x =
     let rloc = Lcl.get x in
     match System.system x with
     | None -> ()
     | Some rhs -> (
+        eval_rhs_event x;
         rloc.called <- true;
         rloc.aborted <- false;
         wrapped rhs x;

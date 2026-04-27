@@ -94,7 +94,7 @@ rule aggregate:
     output: "results/combined.csv"
     run:
         fieldnames = ["config", "task", "property", "expected",
-                      "returned", "timeout", "runtime"]
+                      "returned", "timeout", "runtime", "solver_walltime", "rhs_evals"]
         with open(output[0], "w", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
             writer.writeheader()
