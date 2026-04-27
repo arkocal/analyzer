@@ -15,14 +15,29 @@ GOBLINT      = str(Path(BENCH["goblint"]).resolve())
 SV_BENCH     = Path(BENCH["sv_benchmarks"]).resolve()
 BASE_CONFIG  = Path(BENCH["base_config"]).resolve() if BENCH.get("base_config") else None
 
+def _expand_set(set_file):
+    """Expand a .set file into resolved .yml paths."""
+    base = Path(set_file).resolve().parent
+    paths = []
+    for line in Path(set_file).read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        paths.extend(Path(m).resolve() for m in sorted(glob.glob(str(base / line), recursive=True)))
+    return paths
+
 def _expand(patterns):
+    seen = set()
     paths = []
     for pat in patterns:
-        matches = sorted(glob.glob(pat, recursive=True))
-        if matches:
-            paths.extend(Path(m).resolve() for m in matches)
-        else:
-            paths.append(Path(pat).resolve())
+        matches = sorted(glob.glob(pat, recursive=True)) or [pat]
+        for m in matches:
+            p = Path(m).resolve()
+            candidates = _expand_set(p) if p.suffix == ".set" else [p]
+            for c in candidates:
+                if c not in seen:
+                    seen.add(c)
+                    paths.append(c)
     return paths
 
 CONFIGS      = _expand(BENCH["configs"])
