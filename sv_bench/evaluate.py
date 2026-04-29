@@ -9,8 +9,9 @@ def _():
     import pandas as pd
     import matplotlib.pyplot as plt
     import marimo as mo
+    import numpy as np
 
-    return mo, pd, plt
+    return mo, np, pd, plt
 
 
 @app.cell
@@ -69,10 +70,10 @@ def _(df_raw, min_runtime_filter, source_selector):
     return (df,)
 
 
-@app.cell
-def _(df, mo):
-    mo.ui.table(df)
-    return
+# @app.cell
+# def _(df, mo):
+#     mo.ui.table(df)
+#     return
 
 
 @app.cell
@@ -120,7 +121,7 @@ def _(cactus_plot, df):
 
 
 @app.cell
-def _(pd):
+def _(np, pd):
     def compare_solvers(df, cfg_a, cfg_b):
         """
         min_filter: optional (metric, value) tuple — keeps only tasks where
@@ -132,11 +133,8 @@ def _(pd):
         def cols(frame):
             return frame[['runtime', 'rhs_evals', 'solver_walltime']]
 
-        def f3(s):
-            return f"{s.mean():.3f}" if len(s) > 0 else "—"
-
-        def f0(s):
-            return f"{s.mean():.0f}" if len(s) > 0 else "—"
+        def format_float(s, digits=2):
+            return f"{s:.{digits}f}"
 
         def drop_common_timeouts(af, bf):
             common_to = (
@@ -161,6 +159,13 @@ def _(pd):
 
         a_full, b_full, n_common_timeouts = drop_common_timeouts(a_full_raw, b_full_raw)
         _, _, n_only_a_timeout, n_only_b_timeout = drop_any_timeout(a_full, b_full)
+
+        a_full = a_full.copy()
+        b_full = b_full.copy()
+        a_full['speedup_over_other'] = b_full['solver_walltime'] / a_full['solver_walltime']
+        b_full['speedup_over_other'] = a_full['solver_walltime'] / b_full['solver_walltime']
+        a_full['relative_rhs'] = a_full['rhs_evals'] / b_full['rhs_evals']
+        b_full['relative_rhs'] = b_full['rhs_evals'] / a_full['rhs_evals']
 
         a_right = a_full[a_full['verdict'] == 'right']
         b_right = b_full[b_full['verdict'] == 'right']
@@ -201,26 +206,32 @@ def _(pd):
         df_b_both_right = b_full.loc[b_right_where_a_right_idx]
 
         def make_results_table(df_a, df_b):
-            return pd.DataFrame({
-                cfg_a: {
-                    'avg runtime': f3(cols(df_a)['runtime']),
-                    'med runtime': f3(cols(df_a)['runtime']),
-                    'avg solver walltime': f3(cols(df_a)['solver_walltime']),
-                    'med solver walltime': f3(cols(df_a)['solver_walltime']),
-                    'avg rhs_evals': f3(cols(df_a)['rhs_evals']),
-                    'med rhs_evals': f0(cols(df_a)['rhs_evals']),
-                },
-                cfg_b: {
-                    'avg runtime': f3(cols(df_b)['runtime']),
-                    'med runtime': f3(cols(df_b)['runtime']),
-                    'avg solver walltime': f3(cols(df_b)['solver_walltime']),
-                    'med solver walltime': f3(cols(df_b)['solver_walltime']),
-                    'avg rhs_evals': f3(cols(df_b)['rhs_evals']),
-                    'med rhs_evals': f0(cols(df_b)['rhs_evals']),
-                },
-            })
+            def make_column(df):
+                return pd.Series({
+                    # These are the more important metrics
+                    # (Geometric mean is more appropriate for speedups, but median is more intuitive, so we show both)
+                    # Also, average time is not as meaningful, as the larger tasks dominate it
+                    'geomean speedup': format_float(np.exp(np.log(df['speedup_over_other']).mean())),
+                    'geomean relative_rhs': format_float(np.exp(np.log(df['relative_rhs']).mean())),
+                    'med speedup': format_float(df['speedup_over_other'].median()),
+                    'med relative_rhs': format_float(df['relative_rhs'].median()),
+                    # 'avg speedup': format_float(df['speedup_over_other'].mean()),
+                    # 'avg relative_rhs': format_float(df['relative_rhs'].mean()),
 
-        results_both_right = make_results_table(df_a_both_right, df_b_both_right)
+                    # Solver walltime is more important, so lets hide these
+                    # 'avg runtime': format_float(df['runtime'].mean()),
+                    # 'med runtime': format_float(df['runtime'].median()),
+
+                    # Avg is dominated by large tasks, so we show geomeans of speedups.
+                    # 'avg solver walltime': format_float(df['solver_walltime'].mean()),
+                    # 'med solver walltime': format_float(df['solver_walltime'].median()),
+                    # 'avg rhs_evals': format_float(df['rhs_evals'].mean()),
+                    # 'med rhs_evals': format_float(df['rhs_evals'].median()),
+                })
+            return pd.DataFrame({
+                cfg_a: make_column(df_a),
+                cfg_b: make_column(df_b),
+            })
 
         # Both unknown, but filter out timeouts
         both_unknown_without_timeouts_idx = a_unknown_where_b_unknown_idx.difference(a_timeout.index.union(b_timeout.index))
@@ -231,24 +242,22 @@ def _(pd):
         df_a_both_same_without_timeouts = a_full.loc[a_right_where_b_right_idx.union(a_unknown_where_b_unknown_idx)]
         df_b_both_same_without_timeouts = b_full.loc[b_right_where_a_right_idx.union(b_unknown_where_a_unknown_idx)]
 
-        return (
-            make_results_table(df_a_both_right, df_b_both_right),
-            make_results_table(df_a_both_unknown, df_b_both_unknown),
-            make_results_table(df_a_both_same_without_timeouts, df_b_both_same_without_timeouts),
-            stats
-        )
+        tables = [
+            (f"Both correct (n={len(a_right_where_b_right_idx)})", make_results_table(df_a_both_right, df_b_both_right)),
+            (f"Both unknown, no timeout (n={len(both_unknown_without_timeouts_idx)})", make_results_table(df_a_both_unknown, df_b_both_unknown)),
+            (f"Both same verdict, no timeout (n={len(df_a_both_same_without_timeouts)})", make_results_table(df_a_both_same_without_timeouts, df_b_both_same_without_timeouts)),
+        ]
+        return tables, stats
 
     return (compare_solvers,)
 
 
 @app.cell
 def _(compare_solvers, df, mo):
-    _table_right, _table_unknown, _table_both, _stats = compare_solvers(df, "fwd.json", "wbu.json")
+    _tables, _stats = compare_solvers(df, "td3.json", "fwd.json")
     mo.vstack([
         mo.hstack([mo.stat(label=k, value=str(v)) for k, v in _stats.items()]),
-        _table_right,
-        _table_unknown,
-        _table_both,
+        *[item for title, table in _tables for item in [mo.md(f"### {title}"), table]],
     ])
     return
 
