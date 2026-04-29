@@ -27,14 +27,16 @@ def _(df_raw):
         for sources in df_raw['sources'].dropna()
         for src in sources.split('|')
     })
-    return (all_sources,)
+    all_base_configs = sorted(df_raw['base_config'].dropna().unique())
+    return all_base_configs, all_sources
 
 
 @app.cell
-def _(all_sources, mo):
+def _(all_base_configs, all_sources, mo):
     source_selector = mo.ui.dropdown(all_sources, label="Filter by source")
-    source_selector
-    return (source_selector,)
+    base_config_selector = mo.ui.dropdown(all_base_configs, label="Filter by base config")
+    mo.hstack([source_selector, base_config_selector])
+    return base_config_selector, source_selector
 
 
 @app.cell
@@ -45,7 +47,7 @@ def _(mo):
 
 
 @app.cell
-def _(df_raw, min_runtime_filter, source_selector):
+def _(base_config_selector, df_raw, min_runtime_filter, source_selector):
     def classify(row):
         ret = str(row['returned']).lower()
         exp = str(row['expected']).lower()
@@ -57,6 +59,8 @@ def _(df_raw, min_runtime_filter, source_selector):
             return 'unknown'
 
     df = df_raw.copy()
+    if base_config_selector.value:
+        df = df[df['base_config'] == base_config_selector.value]
     if source_selector.value:
         df = df[df['sources'].fillna('').apply(
             lambda s: source_selector.value in [x.strip() for x in s.split('|')]
@@ -68,12 +72,6 @@ def _(df_raw, min_runtime_filter, source_selector):
     df['verdict'] = df.apply(classify, axis=1)
     df['time_per_rhs'] = df['solver_walltime'] / df['rhs_evals']
     return (df,)
-
-
-# @app.cell
-# def _(df, mo):
-#     mo.ui.table(df)
-#     return
 
 
 @app.cell

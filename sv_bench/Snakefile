@@ -10,10 +10,17 @@ from pathlib import Path
 with open("bench.yaml") as f:
     BENCH = yaml.safe_load(f)
 
-TIMEOUT      = BENCH.get("timeout", 60)
-GOBLINT      = str(Path(BENCH["goblint"]).resolve())
-SV_BENCH     = Path(BENCH["sv_benchmarks"]).resolve()
-BASE_CONFIG  = Path(BENCH["base_config"]).resolve() if BENCH.get("base_config") else None
+TIMEOUT   = BENCH.get("timeout", 60)
+GOBLINT   = str(Path(BENCH["goblint"]).resolve())
+SV_BENCH  = Path(BENCH["sv_benchmarks"]).resolve()
+
+_raw_base = BENCH.get("base_configs", BENCH.get("base_config"))
+if _raw_base is None:
+    BASE_CONFIGS = []
+elif isinstance(_raw_base, str):
+    BASE_CONFIGS = [Path(_raw_base).resolve()]
+else:
+    BASE_CONFIGS = [Path(p).resolve() for p in _raw_base]
 
 def _expand_set(set_file):
     """Expand a .set file into (resolved_path, set_name) pairs."""
@@ -78,33 +85,38 @@ def decode_task_key(key):
 
 RUNS = []  # list of dicts with all info needed to build paths and commands
 
-for cfg in CONFIGS:
-    for task_file in TASK_FILES:
-        with task_file.open() as f:
-            task = yaml.load(f, Loader=_Loader)
-        for prop in task.get("properties", []):
-            if "expected_verdict" not in prop:
-                continue
-            prop_file = (task_file.parent / prop["property_file"]).resolve()
-            RUNS.append({
-                "cfg":       cfg.stem,
-                "cfg_path":  cfg,
-                "task_key":  encode_task_key(task_file),
-                "task_path": task_file,
-                "property":  prop_file.stem,
-                "prop_path": prop_file,
-                "expected":  str(prop["expected_verdict"]).lower(),
-                "sources":   "|".join(TASK_SOURCES.get(task_file, [])),
-            })
+_base_iter = BASE_CONFIGS if BASE_CONFIGS else [None]
+
+for base_cfg in _base_iter:
+    for cfg in CONFIGS:
+        run_id = f"{base_cfg.stem}__{cfg.stem}" if base_cfg else cfg.stem
+        for task_file in TASK_FILES:
+            with task_file.open() as f:
+                task = yaml.load(f, Loader=_Loader)
+            for prop in task.get("properties", []):
+                if "expected_verdict" not in prop:
+                    continue
+                prop_file = (task_file.parent / prop["property_file"]).resolve()
+                RUNS.append({
+                    "run_id":        run_id,
+                    "base_cfg_path": base_cfg,
+                    "cfg_path":      cfg,
+                    "task_key":      encode_task_key(task_file),
+                    "task_path":     task_file,
+                    "property":      prop_file.stem,
+                    "prop_path":     prop_file,
+                    "expected":      str(prop["expected_verdict"]).lower(),
+                    "sources":       "|".join(TASK_SOURCES.get(task_file, [])),
+                })
 
 ALL_OUTPUTS = [
-    f"results/{r['cfg']}/{r['task_key']}/{r['property']}.json"
+    f"results/{r['run_id']}/{r['task_key']}/{r['property']}.json"
     for r in RUNS
 ]
 
 # Index for quick lookup in rule run_one
 RUN_INDEX = {
-    (r["cfg"], r["task_key"], r["property"]): r
+    (r["run_id"], r["task_key"], r["property"]): r
     for r in RUNS
 }
 
@@ -119,7 +131,7 @@ rule aggregate:
     input:  ALL_OUTPUTS
     output: "results/combined.csv"
     run:
-        fieldnames = ["config", "task", "property", "expected",
+        fieldnames = ["base_config", "config", "task", "property", "expected",
                       "returned", "timeout", "runtime", "solver_walltime", "rhs_evals", "sources"]
         with open(output[0], "w", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
@@ -130,23 +142,24 @@ rule aggregate:
 
 
 rule run_one:
-    output: "results/{cfg}/{task_key}/{property}.json"
+    output: "results/{run_id}/{task_key}/{property}.json"
     run:
-        r = RUN_INDEX[(wildcards.cfg, wildcards.task_key, wildcards.property)]
+        r = RUN_INDEX[(wildcards.run_id, wildcards.task_key, wildcards.property)]
+        base_args = (f"--base-config {r['base_cfg_path']}" if r["base_cfg_path"] else "")
         shell(
             "python run_one.py"
             " --goblint {goblint}"
-            + (" --base-config {base}" if BASE_CONFIG else "") +
+            " {base_args}"
             " --config {cfg}"
             " --task {task}"
             " --property-file {prop}"
             " --expected {expected}"
             " --sv-benchmarks {svb}"
             " --timeout {timeout}"
-            " --sources {sources}"
+            " --sources '{sources}'"
             " --output {out}",
             goblint=GOBLINT,
-            base=BASE_CONFIG,
+            base_args=base_args,
             cfg=r["cfg_path"],
             task=r["task_path"],
             prop=r["prop_path"],

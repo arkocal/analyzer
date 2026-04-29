@@ -35,7 +35,7 @@ def task_key(task_file: Path, sv_benchmarks: Path) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--goblint", required=True)
-    parser.add_argument("--base-config", default=None)
+    parser.add_argument("--base-config", nargs="*", default=[])
     parser.add_argument("--config", required=True)
     parser.add_argument("--task", required=True)
     parser.add_argument("--property-file", required=True)
@@ -55,9 +55,11 @@ def main() -> None:
         task = yaml.load(f, Loader=_Loader)
     input_file = task_file.parent / task["input_files"]
 
+    base_config_label = "__".join(Path(b).stem for b in args.base_config)
+
     cmd = [args.goblint]
-    if args.base_config:
-        cmd += ["--conf", str(Path(args.base_config).resolve())]
+    for b in args.base_config:
+        cmd += ["--conf", str(Path(b).resolve())]
     cmd += [
         "--conf", str(config),
         "--set", "ana.specification", str(prop_file.resolve()),
@@ -89,6 +91,7 @@ def main() -> None:
     runtime = round(time.monotonic() - t0, 2)
 
     row = {
+        "base_config": base_config_label,
         "config": config.name,
         "task": task_key(task_file, sv_benchmarks),
         "property": prop_file.stem,
