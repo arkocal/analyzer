@@ -25,12 +25,12 @@ This produces `results/combined.csv`. Jobs are skipped on re-run if already comp
 Run the snakemake step first, then open the notebook:
 
 ```
-uv run marimo edit evaluate.py
+uv run marimo edit --watch evaluate.py
 ```
 
 ## Result data formats
 
-**`results/<config>/<task_key>/<property>.json`** — one file per run.
+**`results/<base_config>__<config>/<task_key>/<property>.json`** — one file per run.
 - `task_key` encodes the task path relative to `sv_benchmarks`, with `/` replaced by `__`.
 - Fields: see combined.csv below.
 
@@ -38,7 +38,8 @@ uv run marimo edit evaluate.py
 
 | Column | Description |
 |---|---|
-| `config` | Config filename (e.g. `wbu.json`) |
+| `base_config` | Base config stem (e.g. `svcomp25`), empty if none |
+| `config` | Solver config filename (e.g. `wbu.json`) |
 | `task` | Task path relative to `sv_benchmarks` |
 | `property` | Property stem (e.g. `unreach-call`) |
 | `expected` | Expected verdict (`true` / `false`) |

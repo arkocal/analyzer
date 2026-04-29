@@ -7,7 +7,6 @@ dependencies = [
     "snakemake",
     "pandas",
     "matplotlib",
-    "jupyter",
-    "ipykernel",
     "marimo",
+    "numpy",
 ]
