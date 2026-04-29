@@ -20,47 +20,51 @@ def _(pd):
     return (df_raw,)
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Filters
+    """)
+    return
+
+
 @app.cell
-def _(df_raw):
+def _(df_raw, mo):
     all_sources = sorted({
         src.strip()
         for sources in df_raw['sources'].dropna()
         for src in sources.split('|')
     })
     all_base_configs = sorted(df_raw['base_config'].dropna().unique())
-    return all_base_configs, all_sources
+
+    source_selector = mo.ui.dropdown(all_sources, label="Source")
+        
+    base_config_selector = mo.ui.dropdown(all_base_configs, value=all_base_configs[0] if all_base_configs else None, label="Base config")
+    exclude_false_expected = mo.ui.checkbox(label="Exclude expected=false tasks", value=False)
+
+    min_runtime_filter = mo.ui.number(value=0, label="Min runtime (s)")
+
+    mo.vstack([mo.hstack([source_selector, base_config_selector, exclude_false_expected]), min_runtime_filter])
+    return (
+        base_config_selector,
+        exclude_false_expected,
+        min_runtime_filter,
+        source_selector,
+    )
 
 
 @app.cell
-def _(all_base_configs, all_sources, mo):
-    source_selector = mo.ui.dropdown(all_sources, label="Filter by source")
-    base_config_selector = mo.ui.dropdown(all_base_configs, label="Filter by base config")
-    mo.hstack([source_selector, base_config_selector])
-    return base_config_selector, source_selector
-
-
-@app.cell
-def _(mo):
-    min_runtime_filter = mo.ui.number(value=0, label="Min runtime (s) — task passes if any config takes at least this long")
-    min_runtime_filter
-    return (min_runtime_filter,)
-
-
-@app.cell
-def _(base_config_selector, df_raw, min_runtime_filter, source_selector):
-    def classify(row):
-        ret = str(row['returned']).lower()
-        exp = str(row['expected']).lower()
-        if ret in ('true', 'false') and ret == exp:
-            return 'right'
-        elif ret in ('true', 'false'):
-            return 'wrong'
-        else:
-            return 'unknown'
-
-    df = df_raw.copy()
-    if base_config_selector.value:
-        df = df[df['base_config'] == base_config_selector.value]
+def _(
+    base_config_selector,
+    df_raw,
+    exclude_false_expected,
+    min_runtime_filter,
+    mo,
+    source_selector,
+):
+    df = df_raw[df_raw['base_config'] == base_config_selector.value].copy()
+    if exclude_false_expected.value:
+        df = df[df['expected'].astype(str).str.lower() != 'false']
     if source_selector.value:
         df = df[df['sources'].fillna('').apply(
             lambda s: source_selector.value in [x.strip() for x in s.split('|')]
@@ -69,32 +73,60 @@ def _(base_config_selector, df_raw, min_runtime_filter, source_selector):
         passing = df.groupby(['task', 'property'])['runtime'].max()
         passing = passing[passing >= min_runtime_filter.value].index
         df = df.set_index(['task', 'property']).loc[passing].reset_index()
-    df['verdict'] = df.apply(classify, axis=1)
-    df['time_per_rhs'] = df['solver_walltime'] / df['rhs_evals']
+    mo.stop(df.empty, mo.callout(mo.md("No tasks match the current filters."), kind="warn"))
     return (df,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Verdict Summary
+    """)
+    return
+
+
+@app.cell
+def _(df):
+    def classify_verdict(row):
+        returned = str(row['returned']).lower()
+        expected = str(row['expected']).lower()
+        has_verdict = returned in ('true', 'false')
+        if not has_verdict:
+            return 'unknown'
+        if returned == expected:
+            return 'right'
+        else:
+            return 'wrong'
+
+    df['verdict'] = df.apply(classify_verdict, axis=1)
+    return
 
 
 @app.cell
 def _(df):
     summary = (
-        df.groupby(['config', 'verdict'])
+        df.groupby(['base_config', 'config', 'verdict'])
           .size()
           .unstack(fill_value=0)
           .reindex(columns=['right', 'wrong', 'unknown'], fill_value=0)
     )
-    timeouts = df[df['timeout'] == True].groupby('config').size().rename('timeout')
+    timeouts = df[df['timeout'] == True].groupby(['base_config', 'config']).size().rename('timeout')
     summary = summary.join(timeouts, how='left').fillna(0).astype(int)
-    return (summary,)
 
-
-@app.cell
-def _(summary):
     summary
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Cactus plot (Runtime / Correct verdicts)
+    """)
+    return
+
+
 @app.cell
-def _(mo, plt):
+def _(df, mo, plt):
     def cactus_plot(df, metric, ylabel):
         fig, ax = plt.subplots(figsize=(8, 5))
         for cfg, group in df.groupby('config'):
@@ -109,12 +141,15 @@ def _(mo, plt):
         plt.tight_layout()
         return mo.mpl.interactive(fig)
 
-    return (cactus_plot,)
+    cactus_plot(df, "runtime", "Runtime")
+    return
 
 
-@app.cell
-def _(cactus_plot, df):
-    cactus_plot(df, "runtime", "runtime")
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Compare Solvers
+    """)
     return
 
 
@@ -127,9 +162,6 @@ def _(np, pd):
         Returns (table DataFrame, stats dict).
         """
         key = ['task', 'property']
-
-        def cols(frame):
-            return frame[['runtime', 'rhs_evals', 'solver_walltime']]
 
         def format_float(s, digits=2):
             return f"{s:.{digits}f}"
@@ -152,18 +184,27 @@ def _(np, pd):
                 len(b_to.difference(a_to)),  # only b timed out
             )
 
+        def add_relative_fields(af, bf, *fields):
+            af = af.copy()
+            bf = bf.copy()
+
+            for field in fields:
+                af[field + "_relative"] = af[field] / bf[field]
+                bf[field + "_relative"] = bf[field] / af[field]
+
+            return af, bf
+
+        def geomean(s):
+            return np.exp(np.log(s).mean())
+
+
         a_full_raw = df[df['config'] == cfg_a].set_index(key)
         b_full_raw = df[df['config'] == cfg_b].set_index(key)
 
         a_full, b_full, n_common_timeouts = drop_common_timeouts(a_full_raw, b_full_raw)
         _, _, n_only_a_timeout, n_only_b_timeout = drop_any_timeout(a_full, b_full)
 
-        a_full = a_full.copy()
-        b_full = b_full.copy()
-        a_full['speedup_over_other'] = b_full['solver_walltime'] / a_full['solver_walltime']
-        b_full['speedup_over_other'] = a_full['solver_walltime'] / b_full['solver_walltime']
-        a_full['relative_rhs'] = a_full['rhs_evals'] / b_full['rhs_evals']
-        b_full['relative_rhs'] = b_full['rhs_evals'] / a_full['rhs_evals']
+        a_full, b_full = add_relative_fields(a_full, b_full, "solver_walltime", "rhs_evals")
 
         a_right = a_full[a_full['verdict'] == 'right']
         b_right = b_full[b_full['verdict'] == 'right']
@@ -193,43 +234,23 @@ def _(np, pd):
             f"{cfg_b} right, {cfg_a} unknown": len(b_right_where_a_unknown_idx),
         }
 
-        # From now on, we are only looking at cases where no solver timed out
-
-        # Do three tables, each has columns configs and rows:
-        # average runtime, median runtime, average rhs_evals, median rhs_eval
-
-        # First for solved by both, second for unknown by both, third for everything.
-
-        df_a_both_right = a_full.loc[a_right_where_b_right_idx]
-        df_b_both_right = b_full.loc[b_right_where_a_right_idx]
 
         def make_results_table(df_a, df_b):
             def make_column(df):
                 return pd.Series({
-                    # These are the more important metrics
-                    # (Geometric mean is more appropriate for speedups, but median is more intuitive, so we show both)
-                    # Also, average time is not as meaningful, as the larger tasks dominate it
-                    'geomean speedup': format_float(np.exp(np.log(df['speedup_over_other']).mean())),
-                    'geomean relative_rhs': format_float(np.exp(np.log(df['relative_rhs']).mean())),
-                    'med speedup': format_float(df['speedup_over_other'].median()),
-                    'med relative_rhs': format_float(df['relative_rhs'].median()),
-                    # 'avg speedup': format_float(df['speedup_over_other'].mean()),
-                    # 'avg relative_rhs': format_float(df['relative_rhs'].mean()),
-
-                    # Solver walltime is more important, so lets hide these
-                    # 'avg runtime': format_float(df['runtime'].mean()),
-                    # 'med runtime': format_float(df['runtime'].median()),
-
-                    # Avg is dominated by large tasks, so we show geomeans of speedups.
-                    # 'avg solver walltime': format_float(df['solver_walltime'].mean()),
-                    # 'med solver walltime': format_float(df['solver_walltime'].median()),
-                    # 'avg rhs_evals': format_float(df['rhs_evals'].mean()),
-                    # 'med rhs_evals': format_float(df['rhs_evals'].median()),
+                    'geomean solver walltime': format_float(geomean(df['solver_walltime'])),
+                    'geomean relative #rhs': format_float(geomean(df['rhs_evals_relative'])),
+                    'median solver walltime': format_float(df['solver_walltime_relative'].median()),
+                    'median relative #rhs': format_float(df['rhs_evals_relative'].median()),
                 })
             return pd.DataFrame({
                 cfg_a: make_column(df_a),
                 cfg_b: make_column(df_b),
             })
+
+        # From now on, we are only looking at cases where no solver timed out
+        df_a_both_right = a_full.loc[a_right_where_b_right_idx]
+        df_b_both_right = b_full.loc[b_right_where_a_right_idx]
 
         # Both unknown, but filter out timeouts
         both_unknown_without_timeouts_idx = a_unknown_where_b_unknown_idx.difference(a_timeout.index.union(b_timeout.index))
@@ -251,8 +272,17 @@ def _(np, pd):
 
 
 @app.cell
-def _(compare_solvers, df, mo):
-    _tables, _stats = compare_solvers(df, "td3.json", "fwd.json")
+def _(df, mo):
+    _configs = sorted(df['config'].dropna().unique())
+    cfg_a_selector = mo.ui.dropdown(_configs, value=_configs[0] if _configs else None, label="Config A")
+    cfg_b_selector = mo.ui.dropdown(_configs, value=_configs[1] if len(_configs) > 1 else _configs[0] if _configs else None, label="Config B")
+    mo.hstack([cfg_a_selector, cfg_b_selector])
+    return cfg_a_selector, cfg_b_selector
+
+
+@app.cell
+def _(cfg_a_selector, cfg_b_selector, compare_solvers, df, mo):
+    _tables, _stats = compare_solvers(df, cfg_a_selector.value, cfg_b_selector.value)
     mo.vstack([
         mo.hstack([mo.stat(label=k, value=str(v)) for k, v in _stats.items()]),
         *[item for title, table in _tables for item in [mo.md(f"### {title}"), table]],
