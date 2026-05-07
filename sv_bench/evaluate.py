@@ -17,7 +17,168 @@ def _():
 @app.cell
 def _(pd):
     df_raw = pd.read_csv('results/combined.csv')
+    df_raw
     return (df_raw,)
+
+
+@app.cell
+def _(df_raw, mo):
+    _pivot = df_raw.pivot_table(
+        index=['task', 'property'],
+        columns=['base_config', 'config'],
+        values='runtime',
+        aggfunc='count'
+    )
+    _missing = _pivot.isna().sum()
+    _missing = _missing[_missing > 0]
+    mo.callout(
+        mo.md("All configs cover every task × property.") if _missing.empty else mo.md(f"Missing combinations:\n\n{_missing.to_string()}"),
+        kind="success" if _missing.empty else "warn"
+    )
+    return
+
+
+@app.cell
+def _(df_raw):
+    all_sources = sorted({
+        src.strip()
+        for sources in df_raw['sources'].dropna()
+        for src in sources.split('|')
+    })
+    all_base_configs = sorted(df_raw['base_config'].dropna().unique())
+    all_configs      = sorted(df_raw['config'].dropna().unique())
+    return all_base_configs, all_sources
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Virtual Results
+
+    Portfolio runs can easily be simulated, there is no need to rerun everything.
+
+    For this, the timeout needs to be known. The value set will be checked against
+    actual timeouts in the data if any are present.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    virtual_results_enabled = mo.ui.checkbox(label="Enable virtual results", value=True)
+    portfolio_type = mo.ui.dropdown(["serial", "parallel"], value="serial", label="Portfolio type")
+    timeout_input = mo.ui.number(value=600, label="TIMEOUT (s)")
+    mo.hstack([virtual_results_enabled, timeout_input, portfolio_type])
+    return portfolio_type, timeout_input, virtual_results_enabled
+
+
+@app.cell
+def _(df_raw, mo, timeout_input, virtual_results_enabled):
+    TIMEOUT = timeout_input.value
+
+    if not virtual_results_enabled.value:
+        warning = None
+    else:
+        _timed_out = df_raw[df_raw['timeout'] == True]
+        if _timed_out.empty:
+            warning = mo.callout(mo.md("No timed-out results in CSV; TIMEOUT not verified."), kind="warn")
+        else:
+            _csv_timeout = int(_timed_out['runtime'].round().mode()[0])
+            if _csv_timeout != TIMEOUT:
+                warning = mo.callout(mo.md(f"Timeout mismatch: `TIMEOUT = {TIMEOUT}` but CSV implies `{_csv_timeout}`."), kind="danger")
+            else:
+                warning = None
+
+    warning
+    return (TIMEOUT,)
+
+
+@app.cell
+def _(TIMEOUT, pd):
+    def make_portfolio(df, columns_same_within_portfolio,
+                           columns_merged_within_portfolio, 
+                           columns_ignored, portfolio_type="parallel"):
+        # These are the same in all rows contributing to a portfolio, regardless of which further columns are used to create a portfolio.
+        GROUPBY_COLUMNS = ['task', 'property', 'expected', 'sources'] + list(columns_same_within_portfolio)
+        CALCULATED_COLUMNS = {"returned", "solver_walltime", "runtime", "timeout"}
+        all_columns = set(df.columns)
+        missing_columns = all_columns.difference(
+                set(columns_merged_within_portfolio.keys()),
+                set(columns_ignored),
+                set(GROUPBY_COLUMNS),
+                CALCULATED_COLUMNS
+        )
+        assert not missing_columns, f"These columns are not accounted for in either groupby, portfolio_columns, or ignored_columns: {missing_columns}"
+
+        # Calculate the portfolio by grouping by the specified columns
+        portfolios = df.groupby(GROUPBY_COLUMNS)
+
+        def serial_portfolio(portfolio: pd.DataFrame):
+            # TODO: they should be pre-ordered!
+            portfolio.sort_values(['base_config', 'config'], inplace=True)
+            cumulative_runtime = 0
+            cumulative_solver_walltime = 0
+            timeout = False
+            returned = "unknown"
+            for row in portfolio.itertuples():
+                cumulative_runtime += row.runtime
+                cumulative_solver_walltime += row.solver_walltime
+                if row.timeout or cumulative_runtime > TIMEOUT:
+                    timeout = True
+                    cumulative_runtime = cumulative_solver_walltime = TIMEOUT
+                    break
+
+                returned = row.returned
+                if returned in ('true', 'false'):
+                    break
+
+            return {
+                "timeout": timeout, 
+                "runtime": cumulative_runtime,
+                "solver_walltime": cumulative_solver_walltime,
+                "returned": returned
+            }
+
+        def parallel_walltime_portfolio(portfolio: pd.DataFrame):
+            with_verdict = portfolio[portfolio['returned'].isin(('true', 'false'))]
+            if not with_verdict.empty:
+                fastest = with_verdict.loc[with_verdict['runtime'].idxmin()]
+                return {
+                    "timeout": False,
+                    "runtime": fastest['runtime'],
+                    "solver_walltime": fastest['solver_walltime'],
+                    "returned": fastest['returned'],
+                }
+            timeout = bool(portfolio['timeout'].any()) or portfolio['runtime'].max() >= TIMEOUT
+            return {
+                "timeout": timeout,
+                "runtime": TIMEOUT if timeout else portfolio['runtime'].max(),
+                "solver_walltime": TIMEOUT if timeout else portfolio['solver_walltime'].max(),
+                "returned": "unknown",
+            }
+
+        def calculate_portolio_result(keys, portfolio):
+            result = dict(zip(GROUPBY_COLUMNS, keys if isinstance(keys, tuple) else (keys,)))
+            result.update(columns_merged_within_portfolio)
+            result.update(parallel_walltime_portfolio(portfolio))
+            return result
+
+        df_portfolio = pd.DataFrame([calculate_portolio_result(keys, group) for keys, group in portfolios])
+        df_extended = pd.concat([df, df_portfolio], ignore_index=True)
+        return df_extended
+
+    return (make_portfolio,)
+
+
+@app.cell
+def _(df_raw, make_portfolio, portfolio_type, virtual_results_enabled):
+    df_extended = df_raw.copy()
+    if virtual_results_enabled.value:
+        # df_extended = make_portfolio(df_extended, {"base_config",}, {"config": "portfolio_solver"}, {"rhs_evals",}, portfolio_type.value)
+        df_extended = make_portfolio(df_extended, {"config",}, {"base_config": "portfolio"}, {"rhs_evals",}, portfolio_type.value)
+
+    df_extended
+    return (df_extended,)
 
 
 @app.cell(hide_code=True)
@@ -29,17 +190,11 @@ def _(mo):
 
 
 @app.cell
-def _(df_raw, mo):
-    all_sources = sorted({
-        src.strip()
-        for sources in df_raw['sources'].dropna()
-        for src in sources.split('|')
-    })
-    all_base_configs = sorted(df_raw['base_config'].dropna().unique())
-
+def _(all_base_configs, all_sources, df_extended, mo):
     source_selector = mo.ui.dropdown(all_sources, label="Source")
-        
-    base_config_selector = mo.ui.dropdown(all_base_configs, value=all_base_configs[0] if all_base_configs else None, label="Base config")
+
+    new_all_base_configs = sorted(df_extended['base_config'].dropna().unique())
+    base_config_selector = mo.ui.dropdown(new_all_base_configs, value=all_base_configs[0] if all_base_configs else None, label="Base config")
     exclude_false_expected = mo.ui.checkbox(label="Exclude expected=false tasks", value=False)
 
     min_runtime_filter = mo.ui.number(value=0, label="Min runtime (s)")
@@ -56,13 +211,13 @@ def _(df_raw, mo):
 @app.cell
 def _(
     base_config_selector,
-    df_raw,
+    df_extended,
     exclude_false_expected,
     min_runtime_filter,
     mo,
     source_selector,
 ):
-    df = df_raw[df_raw['base_config'] == base_config_selector.value].copy()
+    df = df_extended[df_extended['base_config'] == base_config_selector.value].copy()
     if exclude_false_expected.value:
         df = df[df['expected'].astype(str).str.lower() != 'false']
     if source_selector.value:
@@ -73,6 +228,7 @@ def _(
         passing = df.groupby(['task', 'property'])['runtime'].max()
         passing = passing[passing >= min_runtime_filter.value].index
         df = df.set_index(['task', 'property']).loc[passing].reset_index()
+
     mo.stop(df.empty, mo.callout(mo.md("No tasks match the current filters."), kind="warn"))
     return (df,)
 
@@ -114,6 +270,24 @@ def _(df):
     summary = summary.join(timeouts, how='left').fillna(0).astype(int)
 
     summary
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Wrong Verdicts
+    """)
+    return
+
+
+@app.cell
+def _(df, mo):
+    _wrong = df[df['verdict'] == 'wrong'][['task', 'property', 'base_config', 'config', 'expected', 'returned']]
+    mo.callout(mo.md("All verdicts were correct."), kind="success") if _wrong.empty else mo.vstack([
+        mo.callout(mo.md(f"**{len(_wrong)} wrong verdict(s):**"), kind="danger"),
+        _wrong,
+    ])
     return
 
 
@@ -162,27 +336,10 @@ def _(np, pd):
         Returns (table DataFrame, stats dict).
         """
         key = ['task', 'property']
+        df.sort_values(['task', 'property', 'base_config', 'config'], inplace=True)
 
         def format_float(s, digits=2):
             return f"{s:.{digits}f}"
-
-        def drop_common_timeouts(af, bf):
-            common_to = (
-                af[af['timeout'] == True].index
-                .intersection(bf[bf['timeout'] == True].index)
-            )
-            return af[~af.index.isin(common_to)], bf[~bf.index.isin(common_to)], len(common_to)
-
-        def drop_any_timeout(af, bf):
-            a_to = af[af['timeout'] == True].index
-            b_to = bf[bf['timeout'] == True].index
-            any_to = a_to.union(b_to)
-            return (
-                af[~af.index.isin(any_to)],
-                bf[~bf.index.isin(any_to)],
-                len(a_to.difference(b_to)),  # only a timed out
-                len(b_to.difference(a_to)),  # only b timed out
-            )
 
         def add_relative_fields(af, bf, *fields):
             af = af.copy()
@@ -201,46 +358,54 @@ def _(np, pd):
         a_full_raw = df[df['config'] == cfg_a].set_index(key)
         b_full_raw = df[df['config'] == cfg_b].set_index(key)
 
-        a_full, b_full, n_common_timeouts = drop_common_timeouts(a_full_raw, b_full_raw)
-        _, _, n_only_a_timeout, n_only_b_timeout = drop_any_timeout(a_full, b_full)
 
-        a_full, b_full = add_relative_fields(a_full, b_full, "solver_walltime", "rhs_evals")
+        a_full, b_full = add_relative_fields(a_full_raw, b_full_raw, "solver_walltime", "rhs_evals", "runtime")
+        a_full.sort_index(inplace=True)
+        b_full.sort_index(inplace=True)
 
-        a_right = a_full[a_full['verdict'] == 'right']
-        b_right = b_full[b_full['verdict'] == 'right']
+        diff = a_full.index.symmetric_difference(b_full.index)
+        if not diff.empty:
+            print(f"Index mismatch ({len(diff)} entries):", diff.tolist()[:10])
+        a_dups = a_full_raw.index.duplicated().sum()
+        b_dups = b_full_raw.index.duplicated().sum()
+        if a_dups or b_dups:
+            print(f"Duplicate index entries: {cfg_a}={a_dups}, {cfg_b}={b_dups}")
+            print(a_full_raw[a_full_raw.index.duplicated(keep=False)].head(5))
+        else:
+            print("its fine")
 
-        a_unknown = a_full[a_full['verdict'] == 'unknown']
-        b_unknown = b_full[b_full['verdict'] == 'unknown']
+        a_timeout = a_full.index[a_full['timeout']]
+        b_timeout = b_full.index[b_full['timeout']]
 
-        a_timeout = a_full[a_full['timeout']]
-        b_timeout = b_full[a_full['timeout']]
+        a_terminated = a_full.index.difference(a_timeout)
+        b_terminated = b_full.index.difference(b_timeout)
 
-        a_right_where_b_timeout_idx = a_right.index.intersection(b_timeout.index)
-        a_right_where_b_unknown_idx = a_right.index.intersection(b_unknown.index)
-        b_right_where_a_timeout_idx = b_right.index.intersection(a_timeout.index)
-        b_right_where_a_unknown_idx = b_right.index.intersection(a_unknown.index)
+        a_right = a_full.index[a_full['verdict'] == 'right']
+        b_right = b_full.index[b_full['verdict'] == 'right']
 
-        a_right_where_b_right_idx = a_right.index.intersection(b_right.index)
-        b_right_where_a_right_idx = b_right.index.intersection(a_right.index)
+        a_unknown = a_full.index[a_full['verdict'] == 'unknown']
+        b_unknown = b_full.index[b_full['verdict'] == 'unknown']
 
-        a_unknown_where_b_unknown_idx = a_unknown.index.intersection(b_unknown.index)
-        b_unknown_where_a_unknown_idx = b_unknown.index.intersection(a_unknown.index)
+        a_terminated_unknown = a_terminated.intersection(a_unknown)
+        b_terminated_unknown = b_terminated.intersection(b_unknown)
 
         stats = {
-            "timeout — both":            n_common_timeouts,
-            f"{cfg_a} right, {cfg_b} timeout": len(a_right_where_b_timeout_idx),
-            f"{cfg_a} right, {cfg_b} unknown": len(a_right_where_b_unknown_idx),
-            f"{cfg_b} right, {cfg_a} timeout": len(b_right_where_a_timeout_idx),
-            f"{cfg_b} right, {cfg_a} unknown": len(b_right_where_a_unknown_idx),
+            "right - both": len(a_right.intersection(b_right)),
+            "timeout — both": len(a_timeout.intersection(b_timeout)),
+            f"{cfg_a} right, {cfg_b} timeout": len(a_right.intersection(b_timeout)),
+            f"{cfg_a} right, {cfg_b} terminated unknown": len(a_right.intersection(b_terminated_unknown)),
+            f"{cfg_b} right, {cfg_a} timeout": len(b_right.intersection(a_timeout)),
+            f"{cfg_b} right, {cfg_a} terminated unknown": len(b_right.intersection(a_terminated_unknown)),
         }
 
 
         def make_results_table(df_a, df_b):
             def make_column(df):
                 return pd.Series({
-                    'geomean solver walltime': format_float(geomean(df['solver_walltime'])),
+                    'geomean relative runtime': format_float(geomean(df['runtime_relative'])),
+                    'geomean relative solver walltime': format_float(geomean(df['solver_walltime_relative'])),
                     'geomean relative #rhs': format_float(geomean(df['rhs_evals_relative'])),
-                    'median solver walltime': format_float(df['solver_walltime_relative'].median()),
+                    'median relative solver walltime': format_float(df['solver_walltime_relative'].median()),
                     'median relative #rhs': format_float(df['rhs_evals_relative'].median()),
                 })
             return pd.DataFrame({
@@ -248,23 +413,23 @@ def _(np, pd):
                 cfg_b: make_column(df_b),
             })
 
+        both_terminated = a_terminated.intersection(b_terminated)
+
         # From now on, we are only looking at cases where no solver timed out
-        df_a_both_right = a_full.loc[a_right_where_b_right_idx]
-        df_b_both_right = b_full.loc[b_right_where_a_right_idx]
+        df_a_both_right = a_full.loc[a_right.intersection(both_terminated).intersection(b_right)]
+        df_b_both_right = b_full.loc[b_right.intersection(both_terminated).intersection(a_right)]
 
-        # Both unknown, but filter out timeouts
-        both_unknown_without_timeouts_idx = a_unknown_where_b_unknown_idx.difference(a_timeout.index.union(b_timeout.index))
-        df_a_both_unknown = a_full.loc[both_unknown_without_timeouts_idx]
-        df_b_both_unknown = b_full.loc[both_unknown_without_timeouts_idx]
+        df_a_both_terminated_unknown = a_full.loc[a_terminated_unknown.intersection(both_terminated).intersection(b_unknown)]
+        df_b_both_terminated_unknown = b_full.loc[b_terminated_unknown.intersection(both_terminated).intersection(a_unknown)]
 
-        # Both same and no timeouts
-        df_a_both_same_without_timeouts = a_full.loc[a_right_where_b_right_idx.union(a_unknown_where_b_unknown_idx)]
-        df_b_both_same_without_timeouts = b_full.loc[b_right_where_a_right_idx.union(b_unknown_where_a_unknown_idx)]
+        same_verdict = a_full['verdict'] == b_full['verdict'] 
+        df_a_terminated_with_same_verdict = a_full.loc[both_terminated].loc[same_verdict]
+        df_b_terminated_with_same_verdict = b_full.loc[both_terminated].loc[same_verdict]
 
         tables = [
-            (f"Both correct (n={len(a_right_where_b_right_idx)})", make_results_table(df_a_both_right, df_b_both_right)),
-            (f"Both unknown, no timeout (n={len(both_unknown_without_timeouts_idx)})", make_results_table(df_a_both_unknown, df_b_both_unknown)),
-            (f"Both same verdict, no timeout (n={len(df_a_both_same_without_timeouts)})", make_results_table(df_a_both_same_without_timeouts, df_b_both_same_without_timeouts)),
+            (f"Both correct (n={len(df_a_both_right)})", make_results_table(df_a_both_right, df_b_both_right)),
+            (f"Both unknown, no timeout (n={len(df_a_both_terminated_unknown)})", make_results_table(df_a_both_terminated_unknown, df_b_both_terminated_unknown)),
+            (f"Both same verdict, no timeout (n={len(df_a_terminated_with_same_verdict)})", make_results_table(df_a_terminated_with_same_verdict, df_b_terminated_with_same_verdict)),
         ]
         return tables, stats
 
