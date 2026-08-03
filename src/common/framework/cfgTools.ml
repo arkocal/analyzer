@@ -600,12 +600,11 @@ let fprint_hash_dot cfg  =
     let extraNodeStyles node = []
   end
   in
-  let out = open_out "cfg.dot" in
+  let@ out = Out_channel.with_open_text "cfg.dot" in
   let iter_edges f = H.iter (fun n es -> List.iter (f n) es) cfg in
   let ppf = Format.formatter_of_out_channel out in
   fprint_dot (module CfgPrinters (NoExtraNodeStyles)) iter_edges ppf;
-  Format.pp_print_flush ppf ();
-  close_out out
+  Format.pp_print_flush ppf ()
 
 
 let getCFG (file: file) : cfg * cfg * _ =
@@ -654,21 +653,20 @@ let sprint_fundec_html_dot (module Cfg : CfgBidir) live fd =
   fprint_fundec_html_dot (module Cfg) live fd Format.str_formatter;
   Format.flush_str_formatter ()
 
-let dead_code_cfg (module FileCfg: MyCFG.FileCfg) live =
+let dead_code_cfg ~path (module FileCfg: MyCFG.FileCfg) live =
   iterGlobals FileCfg.file (fun glob ->
       match glob with
       | GFun (fd,loc) ->
         (* ignore (Printf.printf "fun: %s\n" fd.svar.vname); *)
-        let base_dir = GobSys.mkdir_or_exists_absolute (Fpath.v "cfgs") in
+        let base_dir = GobSys.mkdir_or_exists_absolute path in
         let c_file_name = Str.global_substitute (Str.regexp Filename.dir_sep) (fun _ -> "%2F") loc.file in
         let dot_file_name = fd.svar.vname^".dot" in
         let file_dir = GobSys.mkdir_or_exists_absolute Fpath.(base_dir / c_file_name) in
         let fname = Fpath.(file_dir / dot_file_name) in
-        let out = open_out (Fpath.to_string fname) in
+        let@ out = Out_channel.with_open_text (Fpath.to_string fname) in
         let ppf = Format.formatter_of_out_channel out in
         fprint_fundec_html_dot (module FileCfg.Cfg) live fd ppf;
         Format.pp_print_flush ppf ();
-        close_out out
       | _ -> ()
     )
 

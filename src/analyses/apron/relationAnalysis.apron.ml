@@ -216,7 +216,7 @@ struct
       | Const x -> e
       | UnOp (unop, e, typ) -> UnOp(unop, inner e, typ)
       | BinOp (binop, e1, e2, typ) -> BinOp (binop, inner e1, inner e2, typ)
-      | CastE (t,e) -> CastE (t, inner e)
+      | CastE (k,t,e) -> CastE (k, t, inner e)
       | Lval (Var v, off) -> Lval (Var v, off)
       | Lval (Mem e, NoOffset) ->
         begin match ask (Queries.MayPointTo e) with
@@ -431,6 +431,10 @@ struct
     in
     let unify_rel = RD.unify new_rel new_fun_rel in (* TODO: unify_with *)
     if M.tracing then M.tracel "combine-rel" "relation unifying %a %a = %a" RD.pretty new_rel RD.pretty new_fun_rel RD.pretty unify_rel;
+    if RD.is_bot_env unify_rel then begin
+      if M.tracing then M.tracel "combine-rel" "raising Deadcode after bottom unify";
+      raise Deadcode
+    end;
     {fun_st with rel = unify_rel}
 
   let combine_assign man r fe f args fc fun_st (f_ask : Queries.ask) =
@@ -506,7 +510,7 @@ struct
         foldGlobals !Cilfacade.current_file (fun acc global ->
             match global with
             | GVar (vi, _, _) when not (BaseUtil.is_static vi) ->
-              mkAddrOf (Var vi, NoOffset) :: acc
+              mkAddrOf (Cil.var vi) :: acc
             (* TODO: what about GVarDecl? *)
             | _ -> acc
           ) deep_addrs
@@ -613,7 +617,7 @@ struct
         if (one_var || GobApron.Lincons1.num_vars lincons1 >= 2) && (exact || Apron.Lincons1.get_typ lincons1 <> EQ) then
           RD.cil_exp_of_lincons1 lincons1
           |> Option.map e_inv
-          |> Option.filter (fun exp -> not (InvariantCil.exp_contains_tmp exp) && InvariantCil.exp_is_in_scope scope exp)
+          |> Option.filter (InvariantCil.exp_is_suitable ~scope)
         else
           None
       )

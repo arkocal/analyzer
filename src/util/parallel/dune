@@ -16,4 +16,5 @@
    )
    domain_shims
    domain-local-await)
+ (instrumentation (backend bisect_ppx))
  )
