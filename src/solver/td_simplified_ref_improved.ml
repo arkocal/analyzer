@@ -1,0 +1,317 @@
+(** Top-down solver with side effects. Baseline for comparisons with td_parallel solvers     ([td_simplified_ref]).
+    This is the same as ([td_simplified]), but it uses records for solver that instead of multiple hashmaps.
+    This solver implements update rules with widening delay and narrowing gas.
+    An origin hashmap is maintained to allow for narrowing on globals to terminate more often.
+    Also, abstract GC is supported - if desired.
+*)
+
+open Batteries
+open Goblint_constraint.ConstrSys
+open Goblint_constraint.SolverTypes
+open Messages
+
+module M = Messages
+
+module Base : GenericEqSolver =
+  functor (S:EqConstrSys) ->
+  functor (HM:Hashtbl.S with type key = S.v) ->
+  struct
+    include Generic.SolverStats (S) (HM)
+    module VS = Set.Make (S.Var)
+
+    module WarrowConf = struct
+      let delay_default = GobConfig.get_int "solvers.td3.side_widen_gas"
+      let gas_default   = GobConfig.get_int "solvers.td3.narrow-globs.narrow-gas"
+      let update_gas    = GobConfig.get_int "solvers.fwd.update_gas"
+    end
+    module DomWarrow = FwdCommon.Warrow(S.Dom)(WarrowConf)
+
+    module LocalWarrowConf = struct
+      let delay_default = GobConfig.get_int "solvers.td3.widen_gas"
+      let gas_default   = GobConfig.get_int "solvers.td3.narrow-globs.narrow-gas"
+      let update_gas    = GobConfig.get_int "solvers.fwd.update_gas"
+    end
+    module LocalDomWarrow = FwdCommon.Warrow(S.Dom)(LocalWarrowConf)
+
+    type var_data = {
+      infl: VS.t;
+      value: S.Dom.t;
+      wpoint: bool;
+      stable: bool;
+      called: bool;
+      contrib: VS.t;
+      local_contrib: LocalDomWarrow.contribution;
+    }
+
+(*
+    module OM = HM
+    let source x = x
+*)
+
+    module OM = Hashtbl.Make(Node)
+    let source = S.Var.node
+
+    type origin_contrib = { contrib: DomWarrow.contribution; set: VS.t }
+
+    type origin = {
+      init: S.Dom.t;
+      from: origin_contrib OM.t;
+      last: S.Dom.t HM.t
+    }
+
+    let abs_GC = ref true
+
+    let get_global_value init from = OM.fold (fun _ oc a -> S.Dom.join a oc.contrib.value) from init
+
+    let is_global y = (S.system y = None)
+
+    let solve st vs =
+      TransferStats.reset ();
+      let rhs_event_count = ref 0 in
+      let (data : var_data ref HM.t) = HM.create 10 in
+      let (origin : origin HM.t)  = HM.create 10 in
+
+      let () = print_solver_stats := fun () ->
+          Logs.debug "|data|=%d" (HM.length data);
+      in
+
+      let add_infl y x =
+        if tracing then trace "infl" "add_infl %a %a" S.Var.pretty_trace y S.Var.pretty_trace x;
+        let y_ref = HM.find data y in
+        y_ref := { !y_ref with infl = VS.add x !y_ref.infl }
+      in
+
+      let init (x : S.v): var_data ref =
+        let x_ref = HM.find_option data x in
+        match x_ref with
+        | Some r -> r
+        | None ->
+          begin
+            new_var_event x;
+            if tracing then trace "init" "init %a" S.Var.pretty_trace x;
+            let data_x = ref {
+                infl = VS.empty;
+                value = S.Dom.bot ();
+                wpoint = false;
+                stable = false;
+                called = false;
+                contrib = VS.empty;
+                local_contrib = LocalDomWarrow.default ();
+              } in
+            HM.replace data x data_x;
+            let orig_x = {
+              init = S.Dom.bot();
+              from = OM.create 10;
+              last = HM.create 10
+            } in
+            HM.add origin x orig_x;
+            data_x
+          end
+      in
+
+      (* now obsolete:
+            let eq x get set =
+              if tracing then trace "eq" "eq %a" S.Var.pretty_trace x;
+              match S.system x with
+              | None -> S.Dom.bot ()
+              | Some f -> f get set
+            in
+      *)
+
+(*
+introduce wrapper to make sure that there is at most one contrib per origin ...
+alternatively, distinguish contribs by session number?
+*)
+
+      let rec destabilize x =
+        if tracing then trace "destab" "destabilize %a" S.Var.pretty_trace x;
+        let x_ref = HM.find data x in
+        let w = !x_ref.infl in
+        x_ref := { !x_ref with infl = VS.empty };
+        VS.iter (fun y ->
+            if tracing then trace "destab" "stable remove %a" S.Var.pretty_trace y;
+            let y_ref = HM.find data y in
+            y_ref := { !y_ref with stable = false };
+            if !y_ref.called then ()
+            else destabilize y
+          ) w
+      in
+
+      let rec query x y =
+        let y_ref = init y in
+        if tracing then trace "sol_query" "entering query for %a; stable %b; called %b" S.Var.pretty_trace y (!y_ref.stable) (!y_ref.called);
+        get_var_event y;
+        if not (!y_ref.called) then (
+          if is_global y then (
+            y_ref := { !y_ref with stable = true };
+          ) else (
+            y_ref := { !y_ref with called = true };
+            if tracing then trace "iter" "iterate called from query";
+            iterate y;
+            y_ref := { !y_ref with called = false };)
+        ) else (
+          if tracing && not (!y_ref.wpoint) then trace "wpoint" "query adding wpoint %a" S.Var.pretty_trace y;
+          y_ref := { !y_ref with wpoint = true };
+        );
+        let tmp = !y_ref.value in
+        add_infl y x;
+        if tracing then trace "answer" "exiting query for %a\nanswer: %a" S.Var.pretty_trace y S.Dom.pretty tmp;
+        tmp
+
+      and side x y d = (* side from x to y; only to variables y w/o rhs; x only used for trace *)
+        assert (is_global y);
+        let sx = source x in
+        let y_ref = init y in
+        if tracing then trace "side" "side to %a (wpx: %b) from %a ## value: %a" S.Var.pretty_trace y (!y_ref.wpoint) S.Var.pretty_trace x S.Dom.pretty d;
+        let {init;last;from} = HM.find origin y in
+        let old_oc = try OM.find from sx
+          with _ ->
+            let oc = { contrib = DomWarrow.default (); set = VS.empty } in
+            OM.add from sx oc;
+            oc in
+        let () = HM.add last x d in
+        let set = VS.add x old_oc.set in
+        let d = VS.fold (fun x d -> S.Dom.join d (HM.find last x)) set d in
+        if M.tracing then M.trace "wpoint" "side widen %a" S.Var.pretty_trace y;
+        let new_contrib = DomWarrow.warrow old_oc.contrib d in
+        OM.replace from sx { contrib = new_contrib; set };
+        if S.Dom.equal new_contrib.value old_oc.contrib.value then ()
+        else (
+          let new_y = if S.Dom.leq old_oc.contrib.value new_contrib.value then
+              S.Dom.join !y_ref.value new_contrib.value
+            else get_global_value init from in
+          if S.Dom.equal new_y !y_ref.value then ()
+          else (
+            y_ref := { !y_ref with value = new_y };
+            destabilize y
+          )
+        )
+
+      and wrap_eq x =
+        match S.system x with
+        | None -> S.Dom.bot ()
+        | Some f ->
+          rhs_event_count := !rhs_event_count + 1;
+          let sigma = HM.create 10 in
+          let new_set = ref VS.empty in
+          let add_sigma y d =
+            let d = try S.Dom.join d (HM.find sigma y) with _ -> d in
+            HM.replace sigma y d;
+            new_set := VS.add y !new_set;
+            side x y d in
+          let d = f (query x) add_sigma in
+          let x_ref = init x in
+          let old_set = !x_ref.contrib in
+          let _ = x_ref := {!x_ref with contrib = !new_set} in
+          let _ = if !abs_GC then
+              let rem_set = VS.filter (fun g -> not (VS.mem g !new_set)) old_set in
+              VS.iter (fun g -> side x g (S.Dom.bot ())) rem_set in
+          d
+
+      and iterate x = (* ~(inner) solve in td3 *)
+
+        (* begining of iterate*)
+        let x_ref = init x in
+        if tracing then trace "iter" "iterate %a, called: %b, stable: %b, wpoint: %b" S.Var.pretty_trace x (!x_ref.called) (!x_ref.stable) (!x_ref.wpoint);
+        assert (S.system x <> None);
+        if not (!x_ref.stable) then (
+          x_ref := { !x_ref with stable = true };
+          let wp = !x_ref.wpoint in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
+          let eqd =
+            wrap_eq x in
+                (*
+                eq x (query x) (side x) in (* d from equation/rhs *)
+                *)
+          let old = !x_ref.value in (* d from older iterate *)
+          let new_lc =
+            if not wp then { !x_ref.local_contrib with value = eqd }
+            else (
+              if M.tracing then M.trace "wpoint" "widen %a" S.Var.pretty_trace x;
+              LocalDomWarrow.warrow !x_ref.local_contrib eqd)
+          in
+          let wpd = new_lc.value in
+          x_ref := { !x_ref with local_contrib = new_lc };
+          if not (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old wpd) ()) then (
+            (* old != wpd *)
+            if tracing && not (S.Dom.is_bot old) && !x_ref.wpoint then trace "solchange" "%a (wpx: %b): %a" S.Var.pretty_trace x (!x_ref.wpoint) S.Dom.pretty_diff (wpd, old);
+            update_var_event x old wpd;
+            x_ref := { !x_ref with value = wpd };
+            destabilize x;
+            if tracing then trace "iter" "iterate changed %a" S.Var.pretty_trace x;
+            (iterate[@tailcall]) x
+          ) else (
+            (* old == wpd *)
+            if not (!x_ref.stable) then (
+              (* value unchanged, but not stable, i.e. destabilized itself during rhs *)
+              if tracing then trace "iter" "iterate still unstable %a" S.Var.pretty_trace x;
+              (iterate[@tailcall]) x
+            ) else (
+              (* this makes e.g. nested loops precise, ex. tests/regression/34-localization/01-nested.c - if we do not remove wpoint, the inner loop head will stay a wpoint and widen the outer loop variable. *)
+              if tracing && (!x_ref.wpoint) then trace "wpoint" "iterate removing wpoint %a" S.Var.pretty_trace x;
+              x_ref := { !x_ref with wpoint = false };
+            )
+          )
+        )
+      in
+
+      let set_start (x,d) =
+        let x_ref = init x in
+        x_ref := { !x_ref with value = d; stable = true;
+                               local_contrib = { (LocalDomWarrow.default ()) with value = d } };
+        if is_global x then HM.replace origin x { init = d; from = OM.create 10; last = HM.create 10 }
+      in
+
+      (* beginning of main solve *)
+      Logs.info "Solver start: %d" (int_of_float (Unix.gettimeofday () *. 1000.));
+
+      List.iter set_start st;
+
+      List.iter (fun x -> ignore @@ init x) vs;
+      (* If we have multiple start variables vs, we might solve v1, then while solving v2 we side some global which v1 depends on with a new value. Then v1 is no longer stable and we have to solve it again. *)
+      let i = ref 0 in
+      let rec solver () = (* as while loop in paper *)
+        incr i;
+        let unstable_vs = List.filter (neg (fun x -> !(HM.find data x).stable)) vs in
+        if unstable_vs <> [] then (
+          if Logs.Level.should_log Debug then (
+            if !i = 1 then Logs.newline ();
+            Logs.debug "Unstable solver start vars in %d. phase:" !i;
+            List.iter (fun v -> Logs.debug "\t%a" S.Var.pretty_trace v) unstable_vs;
+            Logs.newline ();
+            flush_all ();
+          );
+          List.iter (fun x ->
+              let x_ref = HM.find data x in
+              x_ref := { !x_ref with called = true };
+              if tracing then trace "multivar" "solving for %a" S.Var.pretty_trace x;
+              iterate x;
+              x_ref := { !x_ref with called = false }
+            ) unstable_vs;
+          solver ();
+        )
+      in
+      solver ();
+      (* After termination, only those variables are stable which are
+       * - reachable from any of the queried variables vs, or
+       * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)
+
+      Logs.info "Solver end: %d" (int_of_float (Unix.gettimeofday () *. 1000.));
+      Logs.info "RHS: %d" !rhs_event_count;
+      Logs.info "TF: %d" (TransferStats.get ());
+      if Logs.Level.should_log Debug then (
+        Logs.debug "Data after iterate completed";
+        Logs.debug "|data|=%d" (HM.length data);
+      );
+
+      if GobConfig.get_bool "dbg.print_wpoints" then (
+        Logs.newline ();
+        Logs.debug "Widening points:";
+        HM.filter (fun x_ref -> !x_ref.wpoint) data |> HM.iter (fun k x_ref ->
+            Logs.debug "%a" S.Var.pretty_trace k)
+      );
+
+      HM.map (fun x x_ref -> !x_ref.value) data
+  end
+
+let () =
+  Selector.add_solver ("td_simplified_ref_improved", (module PostSolver.DemandEqIncrSolverFromEqSolver (Base)));
