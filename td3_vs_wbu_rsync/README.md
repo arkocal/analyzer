@@ -12,7 +12,7 @@ this repo (`../goblint`, set in `config.yaml`):
 ```sh
 make release                 # in the analyzer root, after make setup
 cd td3_vs_wbu_rsync
-uv run snakemake             # settings from profiles/default: 2 cores, keep-going, rerun only on missing output
+uv run snakemake             # settings from profiles/default: 20 cores, keep-going, rerun only on missing output
 ```
 
 Results show up as each run terminates:
@@ -35,7 +35,7 @@ Results show up as each run terminates:
 
 Set in `config.yaml` (0 = no limit):
 - `timeout_s`: 24 h, about 2× the slowest recorded td3 time of an enabled config (`sim642-minimal3`, ~10.5 h).
-- `memory_limit_mb`: 14 GB, enforced with `RLIMIT_AS`.
+- `memory_limit_mb`: 50 GiB, enforced with `RLIMIT_AS`.
 
 `status` in the results is one of:
 - `done`
@@ -49,6 +49,6 @@ None of these fail the workflow.
 ## Notes
 
 - **Don't rebuild goblint during a run.** It is used in place. Every row records the goblint version.
-- **Timings are noisier with 2 parallel runs.** They compete for memory bandwidth. For cleaner timings, use `uv run snakemake --cores 1`.
+- **Timings are noisier with many parallel runs.** They compete for memory bandwidth. For cleaner timings, use `uv run snakemake --cores 1`.
 - **Delete `out/<config>/<solver>/` to re-run one combination.** Snakemake re-runs only missing outputs (`rerun-triggers: mtime`), so changing the Snakefile or a config won't throw away hours of results.
 - **wbu solver time vs. wall time.** `solver_s` (wbu only) is the solver time from wbu's `Solver start/end` log lines. `wall_s` is the whole goblint process, including parsing and postsolving, and is the number to compare.
