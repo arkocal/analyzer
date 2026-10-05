@@ -1,0 +1,15 @@
+{
+  "solver": "wbu",
+  "solvers": {
+    "fwd": {
+      "update_gas": 10,
+      "local_gc": true,
+      "global_gc": true,
+      "digests": true,
+      "work_iteration": "set"
+    },
+    "bu": {
+      "abort": true
+    }
+  }
+}

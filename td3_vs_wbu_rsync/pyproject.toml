@@ -1,0 +1,8 @@
+[project]
+name = "td3-vs-wbu-rsync"
+version = "0.1.0"
+description = "Compare the td3 and wbu solvers on rsync (AnalyzeThat 2026)"
+requires-python = ">=3.12"
+dependencies = [
+    "snakemake>=9.17.1",
+]

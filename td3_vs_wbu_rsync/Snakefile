@@ -1,0 +1,70 @@
+import csv
+import json
+from pathlib import Path
+
+configfile: "config.yaml"
+
+CONFIGS = config["configs"]
+SOLVERS = config["solvers"]
+
+INPUT = Path(config["input_file"])
+BENCH_CONF = Path("bench/conf")
+
+GOBLINT = Path(config["goblint"]).expanduser().resolve()
+if not GOBLINT.exists():
+    raise ValueError(f"goblint not found at {GOBLINT}: set goblint in config.yaml")
+
+
+rule all:
+    input:
+        "results/compare.csv"
+
+
+rule run:
+    input:
+        conf = BENCH_CONF / "{conf}.json",
+        solver = "solver-configs/{solver}.json",
+    output:
+        "out/{conf}/{solver}/result.json"
+    resources:
+        mem_mb = config["memory_limit_mb"]
+    shell:
+        "python3 scripts/run_one.py"
+        " --goblint {GOBLINT}"
+        " --conf {input.conf} --conf {input.solver}"
+        " --input {INPUT}"
+        " --config-name {wildcards.conf} --solver {wildcards.solver}"
+        " --timeout {config[timeout_s]} --memory-limit-mb {config[memory_limit_mb]}"
+        " --outdir out/{wildcards.conf}/{wildcards.solver}"
+        " --results-csv results/results.csv"
+
+
+# One row per config: td3 vs wbu side by side.
+rule compare:
+    input:
+        expand("out/{conf}/{solver}/result.json", conf=CONFIGS, solver=SOLVERS)
+    output:
+        "results/compare.csv"
+    run:
+        res = {}
+        for path in input:
+            r = json.loads(Path(path).read_text())
+            res[(r["config"], r["solver"])] = r
+        fields = ["config"]
+        for s in SOLVERS:
+            fields += [f"{s}_status", f"{s}_wall_s", f"{s}_max_rss_mb"]
+        fields += ["wbu_solver_s", "wall_ratio_wbu_over_td3"]
+        with open(output[0], "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            for c in CONFIGS:
+                row = {"config": c}
+                for s in SOLVERS:
+                    r = res.get((c, s), {})
+                    row.update({f"{s}_status": r.get("status"), f"{s}_wall_s": r.get("wall_s"),
+                                f"{s}_max_rss_mb": r.get("max_rss_mb")})
+                row["wbu_solver_s"] = res.get((c, "wbu"), {}).get("solver_s")
+                td, wb = res.get((c, "td3"), {}), res.get((c, "wbu"), {})
+                if td.get("status") == "done" and wb.get("status") == "done":
+                    row["wall_ratio_wbu_over_td3"] = f"{float(wb['wall_s']) / float(td['wall_s']):.3f}"
+                w.writerow(row)

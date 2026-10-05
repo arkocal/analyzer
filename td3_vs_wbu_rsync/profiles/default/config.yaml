@@ -1,0 +1,7 @@
+# Loaded automatically by snakemake for this workflow.
+cores: 2
+keep-going: true
+# Runs take hours: only re-run a job when its output is missing, not when the Snakefile or params change.
+rerun-triggers: mtime
+resources:
+  mem_mb: 28000
