@@ -34,7 +34,7 @@ Results show up as each run terminates:
 ## Limits and status
 
 Set in `config.yaml` (0 = no limit):
-- `timeout_s`: no limit by default.
+- `timeout_s`: 24 h, about 2× the slowest recorded td3 time of an enabled config (`sim642-minimal3`, ~10.5 h).
 - `memory_limit_mb`: 14 GB, enforced with `RLIMIT_AS`.
 
 `status` in the results is one of:

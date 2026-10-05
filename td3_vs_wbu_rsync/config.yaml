@@ -6,7 +6,7 @@ input_file: "bench/rsync-v3.4.1-gcc-nosignal.i"   # bench/ is copied from goblin
 solvers: [td3, wbu]   # each maps to solver-configs/<name>.json, applied after the bench config
 
 # Per-run limits; 0 = no limit. A run that hits one is recorded as timeout / oom, not as a workflow failure.
-timeout_s: 0
+timeout_s: 86400         # 24 h; the longest enabled config took ~10.5 h with td3
 memory_limit_mb: 14000    # RLIMIT_AS; with mem_mb: 28000 in the profile, at most 2 runs at once
 
 # Bench configs (bench/conf/<name>.json), with td3 times from the bench README for orientation.
