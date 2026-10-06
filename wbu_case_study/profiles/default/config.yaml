@@ -1,0 +1,7 @@
+# Loaded automatically by snakemake for this workflow.
+cores: 15                # one per run (5 programs x 3 solvers)
+keep-going: true
+# Runs take hours: only re-run a job when its output is missing, not when the Snakefile or params change.
+rerun-triggers: mtime
+resources:
+  mem_mb: 768000          # 15 runs x 50 GiB

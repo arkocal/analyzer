@@ -1,0 +1,36 @@
+# Your goblint build, used in place (it finds its stub includes relative to its build tree, so
+# don't copy the binary, and don't rebuild it while runs are in progress).
+goblint: "../goblint"
+
+# Analysis configs, applied in this order before the solver config (bench/conf/<name>.json).
+# casestudy = level01 + malloc_null + memLeak + uninit; see bench/SOURCE.md.
+analysis_confs: [level01, casestudy]
+property: "bench/no-data-race.prp"   # passed as ana.specification, as in the forward artifact
+
+# Each maps to solver-configs/<name>.json, applied last.
+solvers:
+  - wbu_digest_gc_abort_set     # wbu with history tokens
+  - wbu_nodigest_gc_abort_set   # wbu with the cardinal power construction
+  - simplified_ref_improved     # the wbu paper's TD baseline (td3 is NOT a comparable baseline)
+
+# Per-run limits; 0 = no limit. A run that hits one is recorded as timeout / oom, not as a workflow failure.
+timeout_s: 86400          # 24 h
+memory_limit_mb: 51200    # 50 GiB, RLIMIT_AS
+
+# Programs (bench/concrat/<path>), roughly fast to slow. Measured locally on E-cores, 2026-10-06,
+# solver time digest / nodigest / TD:
+programs:
+  snoopy: snoopy/snoopy.c                # 128 s / 260 s / 214 s  (the reference case study)
+  sshfs: sshfs/sshfs.c                   # all three > 1 h
+  stud: stud/stud.c                      # running locally at the time of writing
+  vanitygen: vanitygen/vanitygen.c
+  wrk: wrk/wrk.c
+  # Further Concrat programs from the TACAS'26 set, not yet tried with this config:
+  # easylogger-mini: EasyLogger/main_mini.c
+  # procdump-mini: ProcDump-for-Linux/main_mini.c
+  # uthash: uthash/uthash.c
+  # nnn-mini: nnn/main_mini.c
+  # libaco: libaco/libaco.c
+  # easylogger: EasyLogger/easyLogger.c
+  # pingfs: pingfs/pingfs.c
+  # cava: cava/cava.c

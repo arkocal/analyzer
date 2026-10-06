@@ -1,0 +1,8 @@
+[project]
+name = "wbu-case-study"
+version = "0.1.0"
+description = "wbu (history tokens vs. cardinal power) vs. the paper TD on Concrat programs"
+requires-python = ">=3.12"
+dependencies = [
+    "snakemake>=9.17.1",
+]

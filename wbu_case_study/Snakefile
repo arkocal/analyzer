@@ -1,0 +1,81 @@
+import csv
+import json
+from pathlib import Path
+
+configfile: "config.yaml"
+
+PROGRAMS = config["programs"]
+SOLVERS = config["solvers"]
+CONF_DIR = Path("bench/conf")
+ANALYSIS_CONFS = [CONF_DIR / f"{c}.json" for c in config["analysis_confs"]]
+PROPERTY = Path(config["property"]).resolve()
+
+GOBLINT = Path(config["goblint"]).expanduser().resolve()
+if not GOBLINT.exists():
+    raise ValueError(f"goblint not found at {GOBLINT}: set goblint in config.yaml")
+
+
+rule all:
+    input:
+        "results/compare.csv"
+
+
+rule run:
+    input:
+        confs = ANALYSIS_CONFS,
+        solver = "solver-configs/{solver}.json",
+        prog = lambda w: Path("bench/concrat") / PROGRAMS[w.prog],
+    output:
+        "out/{prog}/{solver}/result.json"
+    resources:
+        mem_mb = config["memory_limit_mb"]
+    params:
+        confs = lambda w, input: " ".join(f"--conf {c}" for c in input.confs),
+    shell:
+        "python3 scripts/run_one.py"
+        " --goblint {GOBLINT}"
+        " {params.confs} --conf {input.solver}"
+        " --set ana.specification {PROPERTY}"
+        " --input {input.prog}"
+        " --config-name {wildcards.prog} --solver {wildcards.solver}"
+        " --timeout {config[timeout_s]} --memory-limit-mb {config[memory_limit_mb]}"
+        " --outdir out/{wildcards.prog}/{wildcards.solver}"
+        " --results-csv results/results.csv"
+
+
+# One row per program: all solvers side by side, with the two ratios the case study is about.
+rule compare:
+    input:
+        expand("out/{prog}/{solver}/result.json", prog=PROGRAMS, solver=SOLVERS)
+    output:
+        "results/compare.csv"
+    run:
+        res = {}
+        for path in input:
+            r = json.loads(Path(path).read_text())
+            res[(r["config"], r["solver"])] = r
+        fields = ["program"]
+        for s in SOLVERS:
+            fields += [f"{s}_status", f"{s}_wall_s", f"{s}_solver_s", f"{s}_max_rss_mb"]
+        fields += ["nodigest_over_digest", "td_over_digest"]
+
+        def solver_s(r):
+            return float(r["solver_s"]) if r.get("status") == "done" and r.get("solver_s") else None
+
+        with open(output[0], "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            for p in PROGRAMS:
+                row = {"program": p}
+                for s in SOLVERS:
+                    r = res.get((p, s), {})
+                    row.update({f"{s}_status": r.get("status"), f"{s}_wall_s": r.get("wall_s"),
+                                f"{s}_solver_s": r.get("solver_s"), f"{s}_max_rss_mb": r.get("max_rss_mb")})
+                d = solver_s(res.get((p, "wbu_digest_gc_abort_set"), {}))
+                n = solver_s(res.get((p, "wbu_nodigest_gc_abort_set"), {}))
+                t = solver_s(res.get((p, "simplified_ref_improved"), {}))
+                if d and n:
+                    row["nodigest_over_digest"] = f"{n / d:.3f}"
+                if d and t:
+                    row["td_over_digest"] = f"{t / d:.3f}"
+                w.writerow(row)

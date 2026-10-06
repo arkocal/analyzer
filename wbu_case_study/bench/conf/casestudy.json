@@ -1,0 +1,30 @@
+{
+  "ana": {
+    "activated": [
+      "base",
+      "threadid",
+      "threadflag",
+      "threadreturn",
+      "mallocWrapper",
+      "mutexEvents",
+      "mutex",
+      "access",
+      "race",
+      "escape",
+      "expRelation",
+      "mhp",
+      "assert",
+      "var_eq",
+      "symb_locks",
+      "region",
+      "thread",
+      "threadJoins",
+      "abortUnless",
+      "mutexGhosts",
+      "pthreadMutexType",
+      "malloc_null",
+      "memLeak",
+      "uninit"
+    ]
+  }
+}
