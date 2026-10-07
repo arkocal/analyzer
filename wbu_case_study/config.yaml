@@ -22,7 +22,7 @@ memory_limit_mb: 51200    # 50 GiB, RLIMIT_AS
 programs:
   snoopy: snoopy/snoopy.c                # 128 s / 260 s / 214 s  (the reference case study)
   sshfs: sshfs/sshfs.c                   # all three > 1 h
-  stud: stud/stud.c                      # running locally at the time of writing
+  stud: stud/stud.c                      # all three > 1 h
   vanitygen: vanitygen/vanitygen.c
   wrk: wrk/wrk.c
   # Further Concrat programs from the TACAS'26 set, not yet tried with this config:

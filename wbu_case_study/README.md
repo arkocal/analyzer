@@ -10,13 +10,45 @@ been run). It shows two things on real programs:
 The config makes the analysis path-sensitive enough that history tokens actually do work: the wbu
 paper's `level01`, plus the path-sensitive analyses `malloc_null`, `memLeak` and `uninit`. The
 heavier levels don't work for this: `branchSet` (level03) explodes on every real program, and
-level02 crashes on sshfs. See `experiment-results/case_study_wbu/REPORT.md` in the analyzer repo for
-how this config was found.
+level02 crashes on sshfs. How this config was found is written up in
+`experiment-results/case_study_wbu/REPORT.md`, which is only on the original machine (not committed).
 
 Reference result (full snoopy, single local runs on E-cores), solver time:
 wbu digest 128 s, wbu nodigest 260 s, td_simplified_ref_improved 214 s.
 
 The long-term goal is a program or config where this takes a couple of hours.
+
+## Status (2026-10-07)
+
+Server run of commit `cb774e0e0`, all 15 jobs started 2026-10-06 15:39:58 in parallel, 24 h timeout
+(it ends around 2026-10-07 15:40). Results so far are in `results/results.csv` on the server. Solver
+time; "> x" means the run was still going at the newest finished row (2026-10-07 10:20:53):
+
+| Program | wbu digest | wbu nodigest | td_simplified_ref_improved |
+|---|---|---|---|
+| snoopy | **30.2 s** | 55.5 s | 28.2 s |
+| stud | **12446 s (3.5 h)**, 9.5 GB | 67013 s (18.6 h), 7.2 GB | > 18.7 h |
+| vanitygen | > 18.7 h | > 18.7 h | **33107 s (9.2 h)**, 10.7 GB |
+| wrk | > 18.7 h | > 18.7 h | `signal 6` after 5 h at 44.9 GB |
+| sshfs | > 18.7 h | > 18.7 h | > 18.7 h |
+
+What this means:
+- **stud is the lead candidate.** History tokens are 5.4× faster than cardinal power, and at least
+  5.4× faster than TD. If TD hits the 24 h timeout, the claim is "> 6.9×". The ratio grows with
+  program size: it was 1.8–2× on snoopy. stud also meets the "couple of hours" goal.
+- **snoopy:** the nodigest/digest ratio is stable (1.84× here, 2.03× locally). The TD comparison is
+  not: on the server TD is on par with digest, locally it was 1.7× slower. That is probably
+  machine-dependent; TD uses 4.5× more memory. So don't use snoopy for wbu vs. TD.
+- **vanitygen is a counter-example:** TD finished at 9.2 h while both wbu runs were still going.
+- **wrk TD is probably out of memory, not a crash:** 44.9 GB is close to the 50 GiB `RLIMIT_AS`, and a
+  failed allocation can surface as an abort. `run_one.py` only reports `oom` if the log says
+  "Out of memory". Check the end of `out/wrk/simplified_ref_improved/goblint.log`.
+- Locally (1 h timeout, E-cores), sshfs and stud timed out with all three solvers.
+
+Next steps:
+1. After the timeout, read `results/compare.csv` and update the table above.
+2. Check the wrk TD log for out-of-memory.
+3. Decide how to present vanitygen, and whether stud should be re-run for repetitions (single runs so far).
 
 ## Run
 
