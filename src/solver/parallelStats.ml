@@ -32,7 +32,7 @@ struct
     if tracing then trace "sol_stats" "Cas fail: %d" (Atomic.get cas_fail);
 
     (match !end_time with
-     | Some end_time -> if tracing then trace "sol_stats" "Solver duration: %.2f" (end_time -. !start_time)
+     | Some end_time -> Logs.info "Solver duration: %.2f" (end_time -. !start_time)
      | None -> if tracing then trace "sol_stats" "Solver running for (s): %.2f" (Unix.gettimeofday () -. !start_time));
 
     if tracing then trace "sol_stats" "Iterations: %d" (Atomic.get nr_iterations);

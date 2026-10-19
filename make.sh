@@ -9,10 +9,10 @@ opam_setup() {
   opam init -y -a --bare $SANDBOXING # sandboxing is disabled in travis and docker
   opam update
   # This is what we used to do and what we'd like to do:
-  # opam switch -y create . --deps-only --packages=ocaml-variants.4.14.2+options,ocaml-option-flambda --locked
+  # opam switch -y create . --deps-only --packages=ocaml-variants.5.4.1+options,ocaml-option-flambda --locked
   # But this fails on opam < 2.2 due to a bug (https://github.com/ocaml/opam/issues/6946).
   # So this is the workaround from @kit-ty-kate (while we still want to support opam < 2.2):
-  opam switch -y create . --no-install --packages=ocaml-variants.4.14.2+options,ocaml-option-flambda
+  opam switch -y create . --no-install --packages=ocaml-variants.5.4.1+options,ocaml-option-flambda
   opam install -y ./*.opam.locked --deps-only
 }
 

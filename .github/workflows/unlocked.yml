@@ -20,7 +20,7 @@ jobs:
         include:
           # Common configuration
           - os: ubuntu-24.04
-            ocaml-compiler: ocaml-variants.4.14.2+options,ocaml-option-flambda # matches opam lock file
+            ocaml-compiler: ocaml-variants.5.4.1+options,ocaml-option-flambda # matches opam lock file
             apron: true
             z3: false
 
@@ -52,33 +52,33 @@ jobs:
 
           # OS-s
           - os: ubuntu-22.04
-            ocaml-compiler: ocaml-variants.4.14.2+options,ocaml-option-flambda # matches opam lock file
+            ocaml-compiler: ocaml-variants.5.4.1+options,ocaml-option-flambda # matches opam lock file
             apron: true
             z3: false
           - os: macos-26
-            ocaml-compiler: ocaml-variants.4.14.2+options,ocaml-option-flambda # matches opam lock file
+            ocaml-compiler: ocaml-variants.5.4.1+options,ocaml-option-flambda # matches opam lock file
             apron: true
             z3: false
           - os: macos-15-intel
-            ocaml-compiler: ocaml-variants.4.14.2+options,ocaml-option-flambda # matches opam lock file
+            ocaml-compiler: ocaml-variants.5.4.1+options,ocaml-option-flambda # matches opam lock file
             apron: true
             z3: false
           - os: macos-15
-            ocaml-compiler: ocaml-variants.4.14.2+options,ocaml-option-flambda # matches opam lock file
+            ocaml-compiler: ocaml-variants.5.4.1+options,ocaml-option-flambda # matches opam lock file
             apron: true
             z3: false
           - os: macos-14
-            ocaml-compiler: ocaml-variants.4.14.2+options,ocaml-option-flambda # matches opam lock file
+            ocaml-compiler: ocaml-variants.5.4.1+options,ocaml-option-flambda # matches opam lock file
             apron: true
             z3: false
 
           # Optional dependencies
           - os: ubuntu-24.04
-            ocaml-compiler: ocaml-variants.4.14.2+options,ocaml-option-flambda # matches opam lock file
+            ocaml-compiler: ocaml-variants.5.4.1+options,ocaml-option-flambda # matches opam lock file
             apron: false
             z3: false
           - os: ubuntu-24.04
-            ocaml-compiler: ocaml-variants.4.14.2+options,ocaml-option-flambda # matches opam lock file
+            ocaml-compiler: ocaml-variants.5.4.1+options,ocaml-option-flambda # matches opam lock file
             apron: true
             z3: true
 
@@ -135,7 +135,7 @@ jobs:
           - ubuntu-latest
           - macos-latest
         ocaml-compiler:
-          - ocaml-variants.4.14.2+options,ocaml-option-flambda # matches opam lock file
+          - ocaml-variants.5.4.1+options,ocaml-option-flambda # matches opam lock file
 
     name: lower-bounds (${{ matrix.os }}, ${{ matrix.ocaml-compiler }}, downgrade)
 
@@ -187,7 +187,7 @@ jobs:
           - ubuntu-latest
           - macos-latest
         ocaml-compiler:
-          - ocaml-variants.4.14.2+options,ocaml-option-flambda # matches opam lock file
+          - ocaml-variants.5.4.1+options,ocaml-option-flambda # matches opam lock file
 
     runs-on: ${{ matrix.os }}
 
