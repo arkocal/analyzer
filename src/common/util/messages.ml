@@ -171,9 +171,9 @@ struct
 end
 
 
-let formatter = ref Format.std_formatter
+let formatter = ref BatFormat.std_formatter (* not Format.std_formatter: after the first Domain.spawn, its newlines/indentation bypass the domain-local buffer and get misordered *)
 let () = AfterConfig.register (fun () ->
-    if !formatter == Format.std_formatter && MessageUtil.colors_on Unix.stdout then
+    if !formatter == BatFormat.std_formatter && MessageUtil.colors_on Unix.stdout then
       GobFormat.pp_set_ansi_color_tags !formatter
   )
 
