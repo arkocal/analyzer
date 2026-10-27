@@ -2533,6 +2533,25 @@
       "title": "solvers",
       "type": "object",
       "properties": {
+        "td_simplified": {
+          "title": "solvers.td_simplified",
+          "type": "object",
+          "properties": {
+            "update_gas": {
+              "title": "solvers.td_simplified.update_gas",
+              "description": "How often a contribution should simply overwrite the old one when incomparible instead of widening",
+              "type": "integer",
+              "default": 0
+            },
+            "always_warrow": {
+              "title": "solvers.td_simplified.always_warrow",
+              "description": "Always warrow local contributions in td_simplified_ref_improved, instead of only those of unknowns detected as widening points via cyclic re-query (wpoint).",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false
+        },
         "td3": {
           "title": "solvers.td3",
           "type": "object",
