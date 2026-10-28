@@ -24,9 +24,9 @@ Benchmarks: `~/Workspace/sv-easy` (tools `l0-td3`, `l0-td3-nohc`, `l0-indep`, `l
 ## Decide
 - [x] **Hashcons.** BatHashcons' tag counter is non-atomic (unsound). No usable parallel hashcons library exists
       (ocaml-hashcons: not thread-safe; hc 0.5: one global Mutex; Saturn: no weak table). Claude added `GobHashcons`
-      in 8100548c1 (branch `svcomp-parallel`): chosen by solver, sharded + locked for `td_parallel_*`, single weak table
+      in 8b99acf5e (branch `svcomp-parallel`): chosen by solver, sharded + locked for `td_parallel_*`, single weak table
       otherwise; parallel.json now has hashcons on.
-  - [ ] **Ali: understand and review 8100548c1.** Check: mode selection via AfterConfig (solver name prefix), the shared
+  - [ ] **Ali: understand and review 8b99acf5e.** Check: mode selection via AfterConfig (solver name prefix), the shared
         atomic tag counter, shard choice by hash bits, DomainsafeLazy for the shards, stdlib `Weak.Make` instead of
         BatHashcons' table in sequential mode (sequential performance, cf. the batteries pin #2050), and the spinlock
         instead of GobMutex for the shards (see below).
@@ -34,7 +34,7 @@ Benchmarks: `~/Workspace/sv-easy` (tools `l0-td3`, `l0-td3-nohc`, `l0-indep`, `l
         Under domainslib, waiting for a GobMutex (Domain-Local-Await) suspends the task and runs other tasks on the same
         domain (or resumes it on another), clobbering domain-local state of the suspended transfer function
         (`current_node`, `executing_speculative_computations`, Timing stack). mix018_tso.oepc: GobMutex 3/100 fixpoint
-        errors, Stdlib.Mutex 0/100, spinlock 0/100. Amended into 8100548c1.
+        errors, Stdlib.Mutex 0/100, spinlock 0/100. Amended into 8b99acf5e.
   - [ ] Rerun conc-all with immed + hashcons on; measure td3 sequential cost of the new table.
 - [ ] Refuse `exp.arg.enabled` together with a parallel solver (ARG forces hashconsing back on).
 
