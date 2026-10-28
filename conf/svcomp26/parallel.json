@@ -1,0 +1,20 @@
+{
+  "solver": "td_parallel_immediate",
+  "solvers": {
+    "td_parallel": {
+      "domains": 4,
+      "hashmap": "saturn"
+    }
+  },
+  "ana": {
+    "opt": {
+      "hashcons": true
+    }
+  },
+  "exp": {
+    "arg": {
+      "enabled": false
+    }
+  },
+  "warn_at": "post"
+}
