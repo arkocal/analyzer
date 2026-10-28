@@ -14,6 +14,7 @@
    goblint_backtrace
    goblint-cil
    saturn
+   goblint_parallel
    fpath
    yojson
    goblint_timing
