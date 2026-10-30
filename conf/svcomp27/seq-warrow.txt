@@ -1,0 +1,16 @@
+# Portfolio Configuration Sequence: as seq.txt, but with the warrowing solver td_simplified_ref_improved
+# (levelXX-warrow.json: levelXX.json + solver + solvers.td_simplified.update_gas 3, 5, ..., 13)
+# paths are relative to analyzer base directory
+#
+# minimalist run, basically only constants/def_exc, but with context gas
+--conf conf/svcomp27/common.json --conf conf/svcomp27/verify.json --conf conf/svcomp27/level00-warrow.json
+# standard run based on svcomp 25 settings, but with context gas
+--conf conf/svcomp27/common.json --conf conf/svcomp27/verify.json --conf conf/svcomp27/level01-warrow.json
+# apron/affeq run with enums,congruence, bitfield and sets for structs, sporting (side_)widen_gas 30, no autotuner for apron
+--conf conf/svcomp27/common.json --conf conf/svcomp27/verify.json --conf conf/svcomp27/level02-warrow.json
+# apron/affeq run with enums,congruence, bitfield and sets for structs, sporting (side_)widen_gas 30, no autotuner for apron, branchset-sensitive
+--conf conf/svcomp27/common.json --conf conf/svcomp27/verify.json --conf conf/svcomp27/level03-warrow.json
+# base-pathsensitive run
+--conf conf/svcomp27/common.json --conf conf/svcomp27/verify.json --conf conf/svcomp27/level04-warrow.json
+# polyhedra analysis
+--conf conf/svcomp27/common.json --conf conf/svcomp27/verify.json --conf conf/svcomp27/level05-warrow.json
