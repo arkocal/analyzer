@@ -151,7 +151,14 @@ struct
     info
 
   (* hack for char a[] = {"foo"} or {'f','o','o', '\000'} *)
-  let char_array : (lval, bytes) Hashtbl.t = Hashtbl.create 500
+  (* Written during solving, which may run on several domains: lock-free table holding immutable strings,
+     updated by compare-and-set. Keys are compared like in the polymorphic Hashtbl used before. *)
+  module CharArrayKey = struct
+    type t = lval
+    let equal a b = compare a b = 0
+    let hash = Hashtbl.hash
+  end
+  let char_array : (lval, string) Saturn.Htbl.t = Saturn.Htbl.create ~hashed_type:(module CharArrayKey) ()
 
   let init marshal =
     GobOption.iter ((:=) array_map) marshal;
@@ -1633,8 +1640,9 @@ struct
             | TPtr(TInt(IChar, _), _) ->
               let mval = List.hd (AD.to_mval a) in
               let lval = Addr.Mval.to_cil mval in
-              (try `Lifted (Bytes.to_string (Hashtbl.find char_array lval))
-               with Not_found -> Queries.Result.top q)
+              (match Saturn.Htbl.find_opt char_array lval with
+               | Some s -> `Lifted s
+               | None -> Queries.Result.top q)
             | _ -> (* TODO: what about ISChar and IUChar? what about TEnum? *)
               (* ignore @@ printf "Type %a\n" d_plaintype t; *)
               Queries.Result.top q
@@ -1963,17 +1971,19 @@ struct
       | Some (lv, i), Const(CChr c) when c<>'\000' -> (* "abc" <> "abc\000" in OCaml! *)
         let i = Z.to_int i in
         (* ignore @@ printf "%a[%i] = %c\n" d_lval lv i c; *)
-        let s = try Hashtbl.find char_array lv with Not_found -> Bytes.empty in (* current string for lv or empty string *)
-        if i >= Bytes.length s then ((* optimized b/c Out_of_memory *)
-          let dst = Bytes.make (i+1) '\000' in
-          Bytes.blit s 0 dst 0 (Bytes.length s); (* dst[0:len(s)] = s *)
-          Bytes.set dst i c; (* set character i to c inplace *)
-          Hashtbl.replace char_array lv dst
-        ) else (
-          Bytes.set s i c; (* set character i to c inplace *)
-          Hashtbl.replace char_array lv s
-        )
-      (*BatHashtbl.modify_def "" lv (fun s -> Bytes.set s i c) char_array*)
+        (* set character i of the current string for lv (padded with '\000' if too short) to c *)
+        let update s =
+          let dst = Bytes.make (max (i+1) (String.length s)) '\000' in
+          Bytes.blit_string s 0 dst 0 (String.length s);
+          Bytes.set dst i c;
+          Bytes.unsafe_to_string dst
+        in
+        let rec set () =
+          match Saturn.Htbl.find_opt char_array lv with
+          | None -> if not (Saturn.Htbl.try_add char_array lv (update "")) then set ()
+          | Some s -> if not (Saturn.Htbl.try_compare_and_set char_array lv s (update s)) then set ()
+        in
+        set ()
       | _ -> ()
     in
     char_array_hack ();
