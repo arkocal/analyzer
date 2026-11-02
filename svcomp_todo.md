@@ -36,7 +36,7 @@ Benchmarks: `~/Workspace/sv-easy` (tools `l0-td3`, `l0-td3-nohc`, `l0-indep`, `l
         (`current_node`, `executing_speculative_computations`, Timing stack). mix018_tso.oepc: GobMutex 3/100 fixpoint
         errors, Stdlib.Mutex 0/100, spinlock 0/100. Amended into 8b99acf5e.
   - [ ] Rerun conc-all with immed + hashcons on; measure td3 sequential cost of the new table.
-- [ ] Refuse `exp.arg.enabled` together with a parallel solver (ARG forces hashconsing back on).
+- [x] Refuse `exp.arg.enabled` together with a parallel solver (57272bf71).
 
 ## Robustness (crash/hang, not unsound)
 - [x] Plain `Lazy` forced from worker domains → `DomainsafeLazy`: `Offset.Index.Exp.any`/`all`
@@ -46,10 +46,14 @@ Benchmarks: `~/Workspace/sv-easy` (tools `l0-td3`, `l0-td3-nohc`, `l0-indep`, `l
         functions; call-local lazies such as in longjmpLifter/access/apronDomain left alone; spec-module lazies in
         base/basePriv/apron are forced before solving), `Offset_intf` signature change, `goblint_parallel` dependency
         of `goblint_common`.
-- [ ] `DomainsafeLazy.force` waits via Domain-Local-Await too (same task-suspension problem as GobMutex above), when
-      another domain is forcing the same lazy. Rare (first force only), but should block/spin instead. Same for any other
-      GobMutex use inside transfer functions.
-- [ ] Shared Hashtbls: GobConfig getter cache (fill before solving), `Base.char_array`, `ThreadId.tids` (dbg only).
+- [x] `DomainsafeLazy.force` waited via Domain-Local-Await (same task-suspension problem as GobMutex above). Now spins:
+      95fc586b9. The only other GobMutex use in transfer functions is `Goblint_tracing.trace_mutex` (tracing builds only, left as is).
+- [x] `Base.char_array` → Saturn.Htbl with immutable strings + CAS (856eb8e23); `Base.array_map` → Saturn.Htbl (463ecf342,
+      marshal format changed).
+- [x] Refuse `exp.arg.enabled`, `warn_at early` and `gobview` with `td_parallel_*` (57272bf71): with warnings during solving,
+      Messages/Checks tables are written from several domains. With `warn_at post` all of these are gated by `should_warn`/`postsolving`.
+- Accepted (decided 2026-11-02): races that only cause repeated work: GobConfig getter cache, PrecisionUtil/IntDomain0/FloatDomain
+  config caches, ResettableLazy tables (WideningThresholds, Cilfacade stmt/varinfo tables, `activated_library_descs`). `ThreadId.tids` is dbg only.
 - [ ] `OwnConcurrentHashmap` resize race (see `concurrent_hashmap_resize_bug.md`); parallel.json uses saturn meanwhile.
 
 ## Environment (this machine)
@@ -77,3 +81,20 @@ Benchmarks: `~/Workspace/sv-easy` (tools `l0-td3`, `l0-td3-nohc`, `l0-indep`, `l
 - [ ] Go beyond level00: audit the analyses of level01–05 (apron etc.) for global state.
 - [ ] Portfolio design. Keep in mind: SV-Comp limits CPU time summed over cores.
 - [ ] svcomp27 confs don't exist yet; sv-easy's `sv.yml` now differs from the laptop copy.
+
+## Status 2026-11-02 (no-Apron portfolio)
+Decided: validation stays sequential; precision loss from ignored `solvers.td3.*` options (widen_gas, side_widen_gas,
+narrow-globs) accepted; Apron last; no PRs/reviews by others for now.
+- Audit of all analyses in level00/01/04 plus the autotune/autosound extras (memsafety: useAfterFree, memOutOfBounds, memLeak;
+  longjmp analyses; tmpSpecial; pthreadBarriers/Once): no further races during solving beyond the fixed ones. svcomp_may_* flags
+  and dead-branch flags are only set when postsolving/should_warn.
+- **Termination needs Apron at every level**: autotune `termination` activates apron (polyhedra), autoTune.ml:248. So no
+  parallel termination until Apron is done.
+- `conf/svcomp26/level04-nooct.json` added (ed69275fd). Parallel portfolio candidate: level00, level01-nooct, level04-nooct.
+- Sanity runs (td3 vs immed, data race / memsafety / overflow) all agree. Relative runtime outliers (not soundness):
+  list-ext-properties/list-ext_2 (memsafety, level01-nooct): immed 1.6× wall, 3.2× CPU of td3;
+  list-ext-properties/960521-1_1-1 (memsafety, level04-nooct): immed 2× wall, 4× CPU.
+  level04 times out (120s) on 28-race_reach_05/73 and spi-tegra with both solvers.
+- CIL alignment fix recreated as local commit 4dde7331 in ~/Workspace/cil (original lost on the other machine; Ali pushes his).
+- Next (not started): big benchmark of level00/level01-nooct/level04-nooct on conc-all + memsafety + overflow; then Apron
+  (VarMetadataTbl, per-domain managers, atomic refcounts in the C library).
