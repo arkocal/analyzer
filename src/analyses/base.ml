@@ -94,11 +94,12 @@ struct
   (*After a function call, the domain has to be the same as before and we can not depend on the pointers staying the same*)
   (*-> we determine the arrays a pointer can point to once at the beginning of a function*)
   (*There surely is a better way, because this means that often the wrong one gets chosen*)
-  module VarH = Hashtbl.Make(CilType.Varinfo)
   module VarMap = Map.Make(CilType.Varinfo)
-  let array_map = ref (VarH.create 20)
+  (* Filled during solving, which may run on several domains, hence a lock-free table. *)
+  let create_array_map () = Saturn.Htbl.create ~hashed_type:(module CilType.Varinfo) ()
+  let array_map : (varinfo, attributes VarMap.t) Saturn.Htbl.t ref = ref (create_array_map ())
 
-  type marshal = attributes VarMap.t VarH.t
+  type marshal = (varinfo * attributes VarMap.t) list
 
   let array_domain_annotation_enabled = Goblint_parallel.DomainsafeLazy.from_fun (fun () -> GobConfig.get_bool "annotation.goblint_array_domain")
 
@@ -113,13 +114,13 @@ struct
             Seq.fold_left (fun map arr -> VarMap.add arr (info.vattr) map) (pointedArrayMap xs) @@ Seq.filter (fun info -> isArrayType info.vtype) possibleVars
           | _ -> pointedArrayMap xs
       in
-      match VarH.find_option !array_map fundec.svar with
-      | Some _ -> () (*We already have something -> do not change it*)
-      | None -> VarH.add !array_map fundec.svar (pointedArrayMap arguments)
+      if not (Saturn.Htbl.mem !array_map fundec.svar) then
+        (* We already have something -> do not change it. If several domains add at the same time, the first one wins. *)
+        ignore (Saturn.Htbl.try_add !array_map fundec.svar (pointedArrayMap arguments))
 
   let attributes_varinfo info fundec =
     if Goblint_parallel.DomainsafeLazy.force array_domain_annotation_enabled then
-      let map = VarH.find !array_map fundec.svar in
+      let map = Saturn.Htbl.find_exn !array_map fundec.svar in
       match VarMap.find_opt info map with
       | Some attr ->  Some (attr, typeAttrs (info.vtype)) (*if the function has a different domain for this array, use it*)
       | None -> Some (info.vattr, typeAttrs (info.vtype))
@@ -161,14 +162,18 @@ struct
   let char_array : (lval, string) Saturn.Htbl.t = Saturn.Htbl.create ~hashed_type:(module CharArrayKey) ()
 
   let init marshal =
-    GobOption.iter ((:=) array_map) marshal;
+    GobOption.iter (fun loaded ->
+        let h = create_array_map () in
+        List.iter (fun (v, m) -> ignore (Saturn.Htbl.try_add h v m)) loaded;
+        array_map := h
+      ) marshal;
     return_varstore := Cilfacade.create_var @@ makeVarinfo false "RETURN" voidType;
     longjmp_return := Cilfacade.create_var @@ makeVarinfo false "LONGJMP_RETURN" intType;
     Priv.init ()
 
   let finalize () =
     Priv.finalize ();
-    !array_map
+    List.of_seq (Saturn.Htbl.to_seq !array_map)
 
   (**************************************************************************
    * Abstract evaluation functions
