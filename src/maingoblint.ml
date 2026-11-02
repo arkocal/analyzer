@@ -147,6 +147,14 @@ let check_arguments () =
     if get_bool "exp.arg.enabled" then
       warn "Disabling ana.opt.hashcons has no effect because hashconsing is implicitly enabled by exp.arg.enabled";
   );
+  if Stdlib.String.starts_with ~prefix:"td_parallel" (get_string "solver") then (
+    (* The ARG lifters force hashconsing and have not been checked for parallel solving. *)
+    if get_bool "exp.arg.enabled" then
+      fail "exp.arg.enabled is not supported with the parallel solvers";
+    (* Warnings during solving (warn_at early, gobview) write global tables (Messages, Checks) from several domains. *)
+    if get_string "warn_at" = "early" || get_bool "gobview" then
+      fail "warn_at early and gobview are not supported with the parallel solvers"
+  );
   if List.mem "remove_dead_code" @@ get_string_list "trans.activated" then (
     (* 'assert' transform happens before 'remove_dead_code' transform *)
     ignore @@ List.fold_left
