@@ -13,34 +13,85 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
   module Base = FwdCommon.BaseFwdSolver(System)
   open Base
 
-  (** {!Base.Gbl}, except that [update_contribution] uses [LM.replace] on the
-      [last] table. Only the newest binding of a key is ever read, and with
-      [LM.add] the older ones would stay reachable and lengthen bucket chains. *)
+  (** Globals that avoid the lookups of {!Base.Gbl}. {!FwdCommon.Checker} only
+      reads [value] and [infl], so contributions can have a different shape. *)
   module Gbl = struct
-    include Base.Gbl
+    module Sys = System
+    module G = G
+    module LS = LS
+    module LM = LM
+    module GM = GM
+    module OM = Base.Gbl.OM
+    module GWarrow = Base.Gbl.GWarrow
 
+    (** Ordered like [LS], so that joining the values visits unknowns in the
+        same order as folding over a set of them. *)
+    module LMap = Map.Make (System.LVar)
+
+    type contribution = {
+      warrow: GWarrow.contribution;
+      (** Newest value from each unknown at this origin. *)
+      values: G.t LMap.t;
+    }
+
+    type t = {value: G.t; init: G.t; infl: LS.t; last: G.t LM.t; from: contribution OM.t}
+
+    (** Only there because {!FwdCommon.SolverGlobalsSig} requires the field. The
+        values are kept in [contribution.values] instead. *)
+    let unused_last: G.t LM.t = LM.create 1
+
+    let glob: t GM.t = GM.create 100
+
+    let get g =
+      match GM.find_opt glob g with
+      | Some record -> record
+      | None ->
+        let record = {value = G.bot (); init = G.bot (); infl = LS.empty; last = unused_last; from = OM.create 10} in
+        GM.add glob g record;
+        record
+
+    let init (g, d) =
+      GM.add glob g {value = d; init = d; infl = LS.empty; last = unused_last; from = OM.create 10}
+
+    (** Adding an element that is already in a set returns the same set. *)
+    let add_infl record g x =
+      let infl = LS.add x record.infl in
+      if infl != record.infl then GM.replace glob g {record with infl}
+
+    let replace = GM.replace glob
+
+    let construct_value record =
+      OM.fold (fun _ c a -> G.join a c.warrow.value) record.from record.init
+
+    let get_contribution origin record =
+      match OM.find_opt record.from origin with
+      | Some contribution -> contribution
+      | None ->
+        let contribution = {warrow = GWarrow.default (); values = LMap.empty} in
+        OM.add record.from origin contribution;
+        contribution
+
+    (** Returns the record with its new value if the value changed. The record
+        is not stored, since the caller changes it again and stores it once. *)
     let update_contribution x g d =
-      let sx = source x in
-      let g_record = get g in
-      let old_contribution = get_contribution sx g_record in
-      LM.replace g_record.last x d;
-      let set = LS.add x old_contribution.set in
-      let d_new = get_last_contrib set g_record.last in
-      let new_contribution = warrow old_contribution d_new set in
-      OM.replace g_record.from sx new_contribution;
+      let origin = System.LVar.node x in
+      let record = get g in
+      let old_contribution = get_contribution origin record in
+      let values = LMap.add x d old_contribution.values in
+      let d_new = LMap.fold (fun _ v a -> G.join a v) values (G.bot ()) in
+      let warrow = GWarrow.warrow old_contribution.warrow d_new in
+      OM.replace record.from origin {warrow; values};
 
-      if G.equal new_contribution.value old_contribution.value then (NotUpdated g_record)
+      if G.equal warrow.value old_contribution.warrow.value then None
       else (
-        let new_g = if G.leq old_contribution.value new_contribution.value then
-            G.join new_contribution.value g_record.value
-          else construct_value g_record in
-        if (G.equal g_record.value new_g) then (NotUpdated g_record)
-        else (
-          replace g {g_record with value=new_g};
-          Updated {g_record with value=new_g}
-        )
+        let new_g = if G.leq old_contribution.warrow.value warrow.value then
+            G.join warrow.value record.value
+          else construct_value record in
+        if G.equal record.value new_g then None
+        else Some {record with value = new_g}
       )
   end
+
   open FwdCommon.SolverStats(System)
 
   module WorkSet = (val
@@ -75,27 +126,26 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
 
     let table: t LM.t = LM.create 100
 
-    let get x record =
+    (** Use this instead of [Lcl.get], so that the frame and the record come
+        from one lookup. *)
+    let get x =
       match LM.find_opt table x with
       | Some frame -> frame
       | None ->
-        let frame = {x; record; todos = []; finisher = None} in
+        let frame = {x; record = Lcl.get x; todos = []; finisher = None} in
         LM.add table x frame;
         frame
-
-    (** Drop the pending local contributions of an unknown on the DFS path. They
-        would be skipped anyway, since it will be re-evaluated. Global
-        contributions are not affected by aborting. *)
-    let drop_locals x =
-      let frame = LM.find table x in
-      frame.todos <- List.filter (function Global _ -> true | Local _ -> false) frame.todos
   end
 
   open Frames
 
-  let mark_aborted x (record: Lcl.t) =
-    if abort && not record.aborted then drop_locals x;
-    record.aborted <- true
+  (** Also drops the pending local contributions of the frame, which would be
+      skipped anyway since it will be re-evaluated. Global contributions are not
+      affected by aborting. *)
+  let mark_aborted frame =
+    if abort && not frame.record.aborted then
+      frame.todos <- List.filter (function Global _ -> true | Local _ -> false) frame.todos;
+    frame.record.aborted <- true
 
   let get_global x g =
     let glob_data = Gbl.get g in
@@ -106,16 +156,15 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
 
   let set_global x g d =
     match Gbl.update_contribution x g d with
-    | Updated g_record -> (
-        let work = g_record.infl in
-        Gbl.replace g {g_record with infl = LS.empty};
-        let reevaluate x =
-          let r = Lcl.get x in
-          if r.called then mark_aborted x r
-          else WorkSet.add x in
-        LS.iter reevaluate work
-      )
-    | NotUpdated _ -> ()
+    | Some g_record ->
+      let work = g_record.infl in
+      Gbl.replace g {g_record with infl = LS.empty};
+      let reevaluate x =
+        let frame = Frames.get x in
+        if frame.record.called then mark_aborted frame
+        else WorkSet.add x in
+      LS.iter reevaluate work
+    | None -> ()
 
   (** Evaluate the rhs of a frame, and set its todos to the resulting
       contributions, in the order of {!FwdCommon.BaseFwdSolver.wrap}. *)
@@ -161,32 +210,53 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
     let todos = LM.fold (fun y d acc -> Local (y, d) :: acc) local_updates todos in
     frame.todos <- List.rev todos
 
-  (** Start iterating [x], and return the frame that is active afterwards. *)
-  let activate x finisher =
-    let record = Lcl.get x in
-    match System.system x with
+  (** Start iterating a frame, and return the frame that is active afterwards. *)
+  let activate frame finisher =
+    match System.system frame.x with
     | None -> finisher
     | Some rhs ->
-      let frame = Frames.get x record in
       frame.finisher <- finisher;
       evaluate frame rhs;
       Some frame
+
+  (** {!Lcl.update_contribution} for a record that is already at hand. Returns
+      whether the value of the record changed. *)
+  let update_local contributor (y_record: Lcl.t) d =
+    let old_contribution = Lcl.get_contribution contributor y_record in
+    let new_contribution =
+      if always_warrow || y_record.called then Lcl.warrow old_contribution d
+      else {old_contribution with Lcl.LWarrow.value = d} in
+    let old_value = old_contribution.Lcl.LWarrow.value in
+    let new_value = new_contribution.Lcl.LWarrow.value in
+    if D.equal new_value old_value then false
+    else (
+      LM.replace y_record.loc_from contributor new_contribution;
+      let new_y = if D.leq old_value new_value then
+          D.join y_record.loc_value new_value
+        else Lcl.construct_value y_record in
+      if D.equal y_record.loc_value new_y then false
+      else (
+        y_record.loc_value <- new_y;
+        true
+      )
+    )
 
   (** Make a local contribution from a frame, and return the frame that is
       active afterwards. *)
   let set_local frame y d =
     let current = Some frame in
-    match Lcl.update_contribution frame.x y d always_warrow with
-    | Updated y_record ->
-      if y_record.called then (
-        mark_aborted y y_record;
+    let y_frame = Frames.get y in
+    if update_local frame.x y_frame.record d then (
+      if y_frame.record.called then (
+        mark_aborted y_frame;
         current
       )
       else (
         WorkSet.remove y;
-        activate y current
+        activate y_frame current
       )
-    | NotUpdated _ -> current
+    )
+    else current
 
   let rec run = function
     | None -> ()
@@ -202,14 +272,14 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
       | [] ->
         frame.record.called <- false;
         if frame.record.aborted then
-          (run[@tailcall]) (activate frame.x frame.finisher)
+          (run[@tailcall]) (activate frame frame.finisher)
         else (
           let finisher = frame.finisher in
           frame.finisher <- None;
           (run[@tailcall]) finisher
         )
 
-  let iterate x = run (activate x None)
+  let iterate x = run (activate (Frames.get x) None)
 
   module Checker = FwdCommon.Checker(System)(Lcl)(Gbl)
 
