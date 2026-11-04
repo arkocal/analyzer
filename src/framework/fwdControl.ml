@@ -99,6 +99,7 @@ struct
   module FwdSolver = Goblint_solver.FwdSolver.FwdSolver (Sys)
   module BuSolver = Goblint_solver.Bu.FwdBuSolver (Sys)
   module WBuSolver = Goblint_solver.Wbu.FwdWBuSolver (Sys)
+  module WBuIterSolver = Goblint_solver.Wbu_iter.FwdWBuIterSolver (Sys)
   (* module Slvr2 = BuSlvr *)
 
   module CompareGlobSys = FwdCompareConstraints.CompareGlobSys (SpecSys)
@@ -495,7 +496,8 @@ struct
       let gobview = get_bool "gobview" in
       let save_run_str = let o = get_string "save_run" in if o = "" then (if gobview then "run" else "") else o in
       let solve = if (get_string "solver" = "bu") then BuSolver.solve else
-        if (get_string "solver" = "wbu") then WBuSolver.solve else FwdSolver.solve in
+        if (get_string "solver" = "wbu") then WBuSolver.solve else
+        if (get_string "solver" = "wbu_iter") then WBuIterSolver.solve else FwdSolver.solve in
       let rho, tau = Timing.wrap "solving" (solve entrystates entrystates_global) startvars' in
       let lh, gh = LHT.of_seq rho, GHT.of_seq tau in
 
@@ -547,7 +549,8 @@ struct
           CompareGlobSys.compare (get_string "solver", get_string "comparesolver") (lh,gh) (lh2, gh2)
         in
         let solve2 = if (get_string "comparesolver" = "bu") then BuSolver.solve else
-            (if (get_string "comparesolver" = "fwd") then FwdSolver.solve else WBuSolver.solve) in
+            (if (get_string "comparesolver" = "fwd") then FwdSolver.solve else
+             if (get_string "comparesolver" = "wbu_iter") then WBuIterSolver.solve else WBuSolver.solve) in
 
         compare_with solve2;
       );

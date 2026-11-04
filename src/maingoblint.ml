@@ -559,6 +559,7 @@ let do_analyze change_info merged_AST =
       Logs.debug "Activated transformations: %s" at;
       let analyze = if (get_string "solver" = "fwd" ||
                         get_string "solver" = "wbu" ||
+                        get_string "solver" = "wbu_iter" ||
                         get_string "solver" = "bu")
         then FwdControl.analyze else Control.analyze in
       try analyze change_info ast funs

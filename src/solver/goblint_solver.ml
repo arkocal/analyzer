@@ -41,3 +41,4 @@ module FwdCommon = FwdCommon
 module FwdSolver = FwdSolver
 module Bu = Bu
 module Wbu = Wbu
+module Wbu_iter = Wbu_iter
