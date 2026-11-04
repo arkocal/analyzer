@@ -13,20 +13,69 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
   module Base = FwdCommon.BaseFwdSolver(System)
   open Base
 
-  (** Globals that avoid the lookups of {!Base.Gbl}. {!FwdCommon.Checker} only
-      reads [value] and [infl], so contributions can have a different shape. *)
+  open FwdCommon.SolverStats(System)
+
+  module WorkSet = (val
+                     match GobConfig.get_string "solvers.fwd.work_iteration" with
+                     | "lifo" -> (module FwdCommon.LIFOWorkList(System.LVar) : FwdCommon.WorkListS with type elt = System.LVar.t)
+                     | "set"  -> (module FwdCommon.SetWorkList(System.LVar)  : FwdCommon.WorkListS with type elt = System.LVar.t)
+                     | s      -> failwith ("Unknown work_iteration strategy: " ^ s)
+                   )
+
+  let abort = GobConfig.get_bool "solvers.bu.abort"
+
+  let always_warrow = GobConfig.get_bool "solvers.bu.always_warrow"
+
+  (** Solver state added on top of {!Lcl}, which {!FwdCommon.Checker} requires
+      to stay as it is. *)
+  module Frames = struct
+    (** A contribution that an unknown still has to make. Both kinds are needed
+        because with local GC, global updates run after contributions that may
+        descend. *)
+    type todo =
+      | Local of System.LVar.t * D.t
+      | Global of System.GVar.t * G.t
+
+    type t = {
+      x: System.LVar.t;
+      (** Number of the frame, which is cheaper to compare than [x]. *)
+      id: int;
+      record: Lcl.t;
+      mutable todos: todo list;
+      (** The frame to return to when this one is done. [None] for a root
+          picked from the worklist. *)
+      mutable finisher: t option;
+    }
+
+    let table: t LM.t = LM.create 100
+
+    let next_id = ref 0
+
+    (** Use this instead of [Lcl.get], so that the frame and the record come
+        from one lookup. *)
+    let get x =
+      match LM.find_opt table x with
+      | Some frame -> frame
+      | None ->
+        let id = !next_id in
+        incr next_id;
+        let frame = {x; id; record = Lcl.get x; todos = []; finisher = None} in
+        LM.add table x frame;
+        frame
+  end
+
+  open Frames
+
+  (** Globals that avoid the lookups and key comparisons of {!Base.Gbl}. *)
   module Gbl = struct
-    module Sys = System
-    module G = G
-    module LS = LS
-    module LM = LM
-    module GM = GM
     module OM = Base.Gbl.OM
     module GWarrow = Base.Gbl.GWarrow
 
     (** Ordered like [LS], so that joining the values visits unknowns in the
         same order as folding over a set of them. *)
     module LMap = Map.Make (System.LVar)
+
+    module IMap = Map.Make (Stdlib.Int)
 
     type contribution = {
       warrow: GWarrow.contribution;
@@ -36,11 +85,15 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
       joined: G.t;
     }
 
-    type t = {value: G.t; init: G.t; infl: LS.t; last: G.t LM.t; from: contribution OM.t}
-
-    (** Only there because {!FwdCommon.SolverGlobalsSig} requires the field. The
-        values are kept in [contribution.values] instead. *)
-    let unused_last: G.t LM.t = LM.create 1
+    type t = {
+      value: G.t;
+      init: G.t;
+      (** Frames by id, so that adding one does not have to compare unknowns.
+          They are visited in id order, which does not matter for the [set]
+          worklist, but means that [lifo] can differ from {!Wbu}. *)
+      infl: Frames.t IMap.t;
+      from: contribution OM.t;
+    }
 
     let glob: t GM.t = GM.create 100
 
@@ -48,16 +101,16 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
       match GM.find_opt glob g with
       | Some record -> record
       | None ->
-        let record = {value = G.bot (); init = G.bot (); infl = LS.empty; last = unused_last; from = OM.create 10} in
+        let record = {value = G.bot (); init = G.bot (); infl = IMap.empty; from = OM.create 10} in
         GM.add glob g record;
         record
 
     let init (g, d) =
-      GM.add glob g {value = d; init = d; infl = LS.empty; last = unused_last; from = OM.create 10}
+      GM.add glob g {value = d; init = d; infl = IMap.empty; from = OM.create 10}
 
-    (** Adding an element that is already in a set returns the same set. *)
-    let add_infl record g x =
-      let infl = LS.add x record.infl in
+    (** Adding a binding that is already there returns the same map. *)
+    let add_infl record g frame =
+      let infl = IMap.add frame.id frame record.infl in
       if infl != record.infl then GM.replace glob g {record with infl}
 
     let replace = GM.replace glob
@@ -100,52 +153,42 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
       )
   end
 
-  open FwdCommon.SolverStats(System)
+  (** Read-only view of {!Gbl} in the shape that {!FwdCommon.Checker} requires.
+      It only reads [value] and [infl]. Only for use after solving: a view is
+      built once per global, since the checker asks for it on every side effect. *)
+  module CheckerGbl = struct
+    module Sys = System
+    module G = G
+    module LM = LM
+    module LS = LS
+    module GM = GM
+    module OM = Gbl.OM
 
-  module WorkSet = (val
-                     match GobConfig.get_string "solvers.fwd.work_iteration" with
-                     | "lifo" -> (module FwdCommon.LIFOWorkList(System.LVar) : FwdCommon.WorkListS with type elt = System.LVar.t)
-                     | "set"  -> (module FwdCommon.SetWorkList(System.LVar)  : FwdCommon.WorkListS with type elt = System.LVar.t)
-                     | s      -> failwith ("Unknown work_iteration strategy: " ^ s)
-                   )
+    type contribution = Gbl.contribution
 
-  let abort = GobConfig.get_bool "solvers.bu.abort"
+    type t = {value: G.t; init: G.t; infl: LS.t; last: G.t LM.t; from: contribution OM.t}
 
-  let always_warrow = GobConfig.get_bool "solvers.bu.always_warrow"
+    let unused_last: G.t LM.t = LM.create 1
 
-  (** Solver state added on top of {!Lcl}, which {!FwdCommon.Checker} requires
-      to stay as it is. *)
-  module Frames = struct
-    (** A contribution that an unknown still has to make. Both kinds are needed
-        because with local GC, global updates run after contributions that may
-        descend. *)
-    type todo =
-      | Local of System.LVar.t * D.t
-      | Global of System.GVar.t * G.t
+    let views: t GM.t = GM.create 100
 
-    type t = {
-      x: System.LVar.t;
-      record: Lcl.t;
-      mutable todos: todo list;
-      (** The frame to return to when this one is done. [None] for a root
-          picked from the worklist. *)
-      mutable finisher: t option;
-    }
-
-    let table: t LM.t = LM.create 100
-
-    (** Use this instead of [Lcl.get], so that the frame and the record come
-        from one lookup. *)
-    let get x =
-      match LM.find_opt table x with
-      | Some frame -> frame
+    let get g =
+      match GM.find_opt views g with
+      | Some view -> view
       | None ->
-        let frame = {x; record = Lcl.get x; todos = []; finisher = None} in
-        LM.add table x frame;
-        frame
-  end
+        let record = Gbl.get g in
+        let view = {
+          value = record.value;
+          init = record.init;
+          infl = Gbl.IMap.fold (fun _ frame s -> LS.add frame.x s) record.infl LS.empty;
+          last = unused_last;
+          from = record.from;
+        } in
+        GM.add views g view;
+        view
 
-  open Frames
+    let get_contribution origin record = OM.find record.from origin
+  end
 
   (** Also drops the pending local contributions of the frame, which would be
       skipped anyway since it will be re-evaluated. Global contributions are not
@@ -155,9 +198,9 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
       frame.todos <- List.filter (function Global _ -> true | Local _ -> false) frame.todos;
     frame.record.aborted <- true
 
-  let get_global x g =
+  let get_global frame g =
     let glob_data = Gbl.get g in
-    Gbl.add_infl glob_data g x;
+    Gbl.add_infl glob_data g frame;
     glob_data.value
 
   let get_local _ = raise (Failure "Locals should not be queried in rhs")
@@ -166,12 +209,11 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
     match Gbl.update_contribution x g d with
     | Some g_record ->
       let work = g_record.infl in
-      Gbl.replace g {g_record with infl = LS.empty};
-      let reevaluate x =
-        let frame = Frames.get x in
+      Gbl.replace g {g_record with infl = Gbl.IMap.empty};
+      let reevaluate _ frame =
         if frame.record.called then mark_aborted frame
-        else WorkSet.add x in
-      LS.iter reevaluate work
+        else WorkSet.add frame.x in
+      Gbl.IMap.iter reevaluate work
     | None -> ()
 
   (** Evaluate the rhs of a frame, and set its todos to the resulting
@@ -196,7 +238,7 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
 
     let old_global_contribs = x_record.global_contribs in
     let old_local_contribs = x_record.local_contribs in
-    rhs x_record.loc_value get_local collect_local (get_global x) collect_global;
+    rhs x_record.loc_value get_local collect_local (get_global frame) collect_global;
 
     (* Built in reverse. Folds visit elements in the same order as iter. *)
     let todos = [] in
@@ -289,7 +331,7 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
 
   let iterate x = run (activate (Frames.get x) None)
 
-  module Checker = FwdCommon.Checker(System)(Lcl)(Gbl)
+  module Checker = FwdCommon.Checker(System)(Lcl)(CheckerGbl)
 
   let solve localinit globalinit start_unknowns =
     solver_start_event ();
