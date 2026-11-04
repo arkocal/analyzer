@@ -32,6 +32,8 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
       warrow: GWarrow.contribution;
       (** Newest value from each unknown at this origin. *)
       values: G.t LMap.t;
+      (** Join of [values], before warrowing. *)
+      joined: G.t;
     }
 
     type t = {value: G.t; init: G.t; infl: LS.t; last: G.t LM.t; from: contribution OM.t}
@@ -67,7 +69,7 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
       match OM.find_opt record.from origin with
       | Some contribution -> contribution
       | None ->
-        let contribution = {warrow = GWarrow.default (); values = LMap.empty} in
+        let contribution = {warrow = GWarrow.default (); values = LMap.empty; joined = G.bot ()} in
         OM.add record.from origin contribution;
         contribution
 
@@ -77,10 +79,16 @@ module FwdWBuIterSolver (System: FwdGlobConstrSys) = struct
       let origin = System.LVar.node x in
       let record = get g in
       let old_contribution = get_contribution origin record in
-      let values = LMap.add x d old_contribution.values in
-      let d_new = LMap.fold (fun _ v a -> G.join a v) values (G.bot ()) in
-      let warrow = GWarrow.warrow old_contribution.warrow d_new in
-      OM.replace record.from origin {warrow; values};
+      let values, joined =
+        match LMap.find_opt x old_contribution.values with
+        | Some old_d when G.equal old_d d ->
+          (* Same value from this unknown, so the join stays the same as well. *)
+          old_contribution.values, old_contribution.joined
+        | _ ->
+          let values = LMap.add x d old_contribution.values in
+          values, LMap.fold (fun _ v a -> G.join a v) values (G.bot ()) in
+      let warrow = GWarrow.warrow old_contribution.warrow joined in
+      OM.replace record.from origin {warrow; values; joined};
 
       if G.equal warrow.value old_contribution.warrow.value then None
       else (
